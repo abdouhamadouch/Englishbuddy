@@ -50,7 +50,7 @@ USERS_FILE = Path("users.json")
 PENDING_FILE = Path("pending_users.json")
 VOCAB_FILE = Path("vocab_bank.json")
 
-app = Flask(name)
+app = Flask(__name__)
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -183,6 +183,7 @@ def get_arguments(message):
         return ""
 
     parts = message.text.strip().split(maxsplit=1)
+
     if len(parts) == 2:
         return parts[1].strip()
 
@@ -351,7 +352,8 @@ async def correct_text(text):
     return await ask_groq(
         f"""
 Correct this English text for an Arabic-speaking learner.
- Focus mainly on:
+
+Focus mainly on:
 - spelling mistakes
 - typing mistakes
 - incorrect or missing words
@@ -658,6 +660,7 @@ async def talk_with_ai(text, user_name):
 
         "Your conversation should feel like a normal human conversation, "
         "not like a customer-service bot, tutor script, or interview. "
+
         "Respond to what the user actually says. "
         "Do not use scripted greetings. "
         "Do not repeat greetings. "
@@ -828,6 +831,7 @@ async def make_audio(text, voice):
                 flush=True,
             )
             return None
+
         if os.path.getsize(filename) == 0:
             print(
                 "TTS error: audio file is empty.",
@@ -1185,7 +1189,8 @@ async def name_is_tagged(update, context):
     for entity in entities:
 
         if entity.type == "text_mention":
-           if (
+
+            if (
                 entity.user
                 and entity.user.id == OWNER_ID
             ):
@@ -1193,7 +1198,7 @@ async def name_is_tagged(update, context):
 
         elif entity.type == "mention":
 
-     if not OWNER_USERNAME:
+            if not OWNER_USERNAME:
                 continue
 
             mentioned_username = text[
@@ -1201,7 +1206,7 @@ async def name_is_tagged(update, context):
                 entity.offset + entity.length
             ].lower().lstrip("@")
 
-    if mentioned_username == OWNER_USERNAME:
+            if mentioned_username == OWNER_USERNAME:
                 return True
 
     return False
@@ -1591,6 +1596,7 @@ async def access_callback(update, context):
         return
 
     if action == "approve":
+
         add_approved(user_id)
         remove_pending(user_id)
 
@@ -1802,7 +1808,8 @@ async def reject_command(update, context):
         update.effective_user.id
     ):
         return
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: user_id = extract_user_id(
+
+    user_id = extract_user_id(
         update.effective_message
     )
 
@@ -2029,6 +2036,7 @@ async def use_command(update, context):
 async def ai_command(update, context):
 
     chat = update.effective_chat
+
     if (
         chat.type == "private"
         and not is_approved(
@@ -2270,7 +2278,8 @@ async def arabic_command_handler(update, context):
             argument,
             "US",
         )
-   elif action == "uk":
+
+    elif action == "uk":
 
         await send_pronunciation(
             update,
@@ -2460,7 +2469,8 @@ def run_flask():
 async def set_command_menu(application):
 
     try:
- await application.bot.set_my_commands(
+
+        await application.bot.set_my_commands(
             [
                 ("start", "Start FixMyEnglish"),
                 ("help", "Show commands"),
@@ -2666,6 +2676,7 @@ def build_application():
             stats_command,
         )
     )
+
     application.add_handler(
         CallbackQueryHandler(
             access_callback
@@ -2817,5 +2828,5 @@ def main():
             first_run = False
 
 
-if name == "main":
+if __name__ == "__main__":
     main()
