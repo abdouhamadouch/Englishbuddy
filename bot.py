@@ -1202,8 +1202,12 @@ DUAS = [
 NAME_PATTERNS = [
     r"عبد\s*الكريم",
     r"كريمو",
+    r"كريم",
     r"\bkarim\b",
+    r"\bkarimo\b",
     r"\babdelkarim\b",
+    r"\babdel\s*karim\b",
+    r"\babd\s*el\s*karim\b",
     r"\babdlkrim\b",
 ]
 
@@ -1214,6 +1218,7 @@ def name_is_mentioned(text):
 
     normalized = text.lower().strip()
 
+    # توحيد بعض أشكال الحروف العربية
     normalized = re.sub(
         r"[إأآا]",
         "ا",
@@ -1251,15 +1256,9 @@ async def name_is_tagged(update, context):
     if not message:
         return False
 
-    if (
-        message.reply_to_message
-        and message.reply_to_message.from_user
-        and message.reply_to_message.from_user.id == OWNER_ID
-    ):
-        return True
-
     sender = update.effective_user
 
+    # حفظ username الخاص بالمالك عندما يرسل رسالة
     if (
         sender
         and sender.id == OWNER_ID
@@ -1279,15 +1278,8 @@ async def name_is_tagged(update, context):
 
     for entity in entities:
 
-        if entity.type == "text_mention":
-
-            if (
-                entity.user
-                and entity.user.id == OWNER_ID
-            ):
-                return True
-
-        elif entity.type == "mention":
+        # @username mention
+        if entity.type == "mention":
 
             if not OWNER_USERNAME:
                 continue
@@ -1298,6 +1290,15 @@ async def name_is_tagged(update, context):
             ].lower().lstrip("@")
 
             if mentioned_username == OWNER_USERNAME:
+                return True
+
+        # Telegram mention بالاسم مباشرة
+        elif entity.type == "text_mention":
+
+            if (
+                entity.user
+                and entity.user.id == OWNER_ID
+            ):
                 return True
 
     return False
@@ -1312,14 +1313,17 @@ async def name_reaction(update, context):
 
     text = message.text or message.caption or ""
 
+    # البحث عن اسم المالك
     mentioned = name_is_mentioned(text)
 
+    # البحث عن Tag / Mention
     if not mentioned:
         mentioned = await name_is_tagged(
             update,
             context,
         )
 
+    # لا يوجد اسم أو Tag → لا شيء
     if not mentioned:
         return False
 
@@ -1334,6 +1338,7 @@ async def name_reaction(update, context):
     else:
         sender_name = "friend"
 
+    # ❤️ Reaction
     try:
         await context.bot.set_message_reaction(
             chat_id=message.chat_id,
@@ -1350,6 +1355,7 @@ async def name_reaction(update, context):
             flush=True,
         )
 
+    # 🤲 دعاء
     dua = random.choice(DUAS).strip()
 
     await message.reply_text(
@@ -1357,6 +1363,7 @@ async def name_reaction(update, context):
     )
 
     return True
+
 
 
 # =========================================================
