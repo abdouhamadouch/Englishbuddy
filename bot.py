@@ -57,7 +57,6 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 json_lock = threading.Lock()
 talk_mode_users = set()
 
-# نحفظ username المالك إذا ظهر لنا في رسالة
 OWNER_USERNAME = None
 
 
@@ -197,6 +196,49 @@ def get_target_text(message):
         return reply
 
     return get_arguments(message)
+
+
+def get_pronunciation_target(message):
+    """
+    Supports:
+
+    /us hello
+    /us slowly hello
+
+    /uk hello
+    /uk slowly hello
+
+    Also supports reply mode:
+
+    Reply to a message + /us
+    Reply to a message + /us slowly
+    """
+
+    arguments = get_arguments(message)
+    reply = get_reply_text(message)
+
+    slow = False
+    text = ""
+
+    if arguments:
+
+        parts = arguments.split(maxsplit=1)
+
+        if parts[0].lower() == "slowly":
+            slow = True
+
+            if len(parts) == 2:
+                text = parts[1].strip()
+            elif reply:
+                text = reply
+
+        else:
+            text = arguments
+
+    elif reply:
+        text = reply
+
+    return text, slow
 
 
 def is_short_input(text):
@@ -654,6 +696,7 @@ User request:
 
 
 async def talk_with_ai(text, user_name):
+
     sys_prompt = (
         f"You are FixMyEnglish, a natural and friendly English conversation "
         f"companion chatting with {user_name}. "
@@ -667,10 +710,11 @@ async def talk_with_ai(text, user_name):
         "Do not ask a question after every message. "
         "Do not ask questions merely to keep the conversation alive. "
         "Do not constantly suggest random topics. "
-        "Do not say things like 'What's on your mind?', "
+
+        "Never repeatedly say things like "
+        "'What's on your mind?', "
         "'What would you like to talk about?', or "
-        "'Would you like to practice English?' unless the user actually "
-        "asks for that. "
+        "'Would you like to practice English?' "
 
         "If the user gives a short casual reply such as "
         "'Nothing', 'Nothing much', 'I'm tired', 'Yeah', 'No', or 'Okay', "
@@ -678,8 +722,14 @@ async def talk_with_ai(text, user_name):
         "Do not force another question or topic. "
 
         "If the user says something funny, respond naturally to the joke. "
-        "If the user shares something, react to what they shared instead "
-        "of immediately turning it into a question. "
+        "You can be light, witty, or playful when it fits the conversation, "
+        "but do not force jokes. "
+
+        "If the user gives you a direct instruction, follow it directly "
+        "instead of asking unnecessary questions. "
+
+        "If the user shares something, react naturally to what they shared "
+        "instead of immediately turning it into a question. "
 
         "If the user is practicing English, help naturally. "
         "Correct English only when there is a useful mistake to correct. "
@@ -695,6 +745,7 @@ async def talk_with_ai(text, user_name):
 
         "Do not end every response with a question. "
         "It is completely fine to finish with a natural statement. "
+
         "Do not offer unrelated help or random suggestions. "
         "Do not sound repetitive or robotic."
     )
@@ -706,20 +757,62 @@ async def talk_with_ai(text, user_name):
     )
 
 
+# =========================================================
+# AUTOMATIC CORRECTION
+# =========================================================
+
 async def auto_correct_chat(text):
-    prompt = (
-        "Check if this English message has an important grammar, spelling, "
-        "or word-choice mistake. "
-        "Focus on actual mistakes, not stylistic preferences. "
-        "If there is a mistake, briefly show the correction and a short "
-        "explanation. If it is correct, reply with 'OK'. "
-        "Do not add unnecessary advice or questions.\n"
-        f"Text: {text}"
-    )
+
+    prompt = f"""
+Check this English message for REAL and IMPORTANT mistakes only.
+
+Your job is automatic correction, not rewriting.
+
+Rules:
+
+1. If the message is a single English word:
+   - If the spelling is correct, return exactly: OK
+   - If there is an obvious spelling/typing mistake, give the correct word.
+   - Do not replace a correct word with another word just because another
+     word sounds more natural.
+
+2. If the message is an English sentence:
+   - Correct genuine spelling mistakes.
+   - Correct genuine grammar mistakes.
+   - Correct a wrong or missing word when the meaning clearly requires it.
+   - Do not rewrite correct sentences for style.
+   - Do not make the sentence more advanced.
+   - Do not change correct wording just because you prefer another style.
+
+3. If there is no important mistake:
+   return exactly:
+   OK
+
+4. If there is a mistake:
+   Use this short format:
+
+   ❌ Original:
+   [original]
+
+   ✅ Correct:
+   [corrected version]
+
+   📝 Why:
+   [very short explanation]
+
+5. Never invent a mistake.
+6. Do not give a grammar lesson.
+7. Do not ask a question.
+8. Keep the response short.
+9. If the text is not actually English, return exactly: OK
+
+Text:
+{text}
+"""
 
     return await ask_groq(
         prompt,
-        300,
+        350,
     )
 
 
@@ -805,7 +898,7 @@ Word:
 # TEXT TO SPEECH
 # =========================================================
 
-async def make_audio(text, voice):
+async def make_audio(text, voice, slow=False):
 
     filename = None
 
@@ -813,9 +906,12 @@ async def make_audio(text, voice):
         fd, filename = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
 
+        rate = "-30%" if slow else "+0%"
+
         communicate = edge_tts.Communicate(
             text=text,
             voice=voice,
+            rate=rate,
             connect_timeout=10,
             receive_timeout=20,
         )
@@ -879,7 +975,7 @@ async def make_audio(text, voice):
         return None
 
 
-async def send_pronunciation(update, word, dialect):
+async def send_pronunciation(update, word, dialect, slow=False):
 
     message = update.effective_message
 
@@ -893,10 +989,10 @@ async def send_pronunciation(update, word, dialect):
 
     word_count = len(word.split())
 
-    if word_count > 700:
+    if word_count > 70:
         await message.reply_text(
             "❌ The text is too long for pronunciation.\n"
-            "The maximum is 700 words."
+            "The maximum is 70 words."
         )
         return
 
@@ -907,7 +1003,7 @@ async def send_pronunciation(update, word, dialect):
     else:
         voice = US_VOICE
 
-    if word_count <= 4:
+    if word_count <= 3:
 
         if dialect == "US":
             info = await pronunciation_info(
@@ -929,6 +1025,7 @@ async def send_pronunciation(update, word, dialect):
     audio = await make_audio(
         word,
         voice,
+        slow=slow,
     )
 
     if not audio:
@@ -939,9 +1036,15 @@ async def send_pronunciation(update, word, dialect):
 
     try:
         with open(audio, "rb") as f:
+            caption = (
+                "🔊 Slow pronunciation"
+                if slow
+                else "🔊 Pronunciation"
+            )
+
             await message.reply_audio(
                 audio=f,
-                caption="🔊 Pronunciation",
+                caption=caption,
             )
 
     except Exception as e:
@@ -1148,20 +1251,12 @@ async def name_is_tagged(update, context):
     if not message:
         return False
 
-    # -----------------------------------------------------
-    # إذا كان الشخص يرد على رسالة المالك
-    # -----------------------------------------------------
-
     if (
         message.reply_to_message
         and message.reply_to_message.from_user
         and message.reply_to_message.from_user.id == OWNER_ID
     ):
         return True
-
-    # -----------------------------------------------------
-    # إذا كانت هذه الرسالة من المالك، نحفظ username الخاص به
-    # -----------------------------------------------------
 
     sender = update.effective_user
 
@@ -1171,10 +1266,6 @@ async def name_is_tagged(update, context):
         and sender.username
     ):
         OWNER_USERNAME = sender.username.lower()
-
-    # -----------------------------------------------------
-    # Telegram text mention
-    # -----------------------------------------------------
 
     entities = []
 
@@ -1217,7 +1308,7 @@ async def name_reaction(update, context):
     message = update.effective_message
 
     if not message:
-        return
+        return False
 
     text = message.text or message.caption or ""
 
@@ -1230,11 +1321,7 @@ async def name_reaction(update, context):
         )
 
     if not mentioned:
-        return
-
-    # -----------------------------------------------------
-    # اسم الشخص الذي ذكر المالك
-    # -----------------------------------------------------
+        return False
 
     sender = update.effective_user
 
@@ -1246,10 +1333,6 @@ async def name_reaction(update, context):
         )
     else:
         sender_name = "friend"
-
-    # -----------------------------------------------------
-    # ❤️ Reaction
-    # -----------------------------------------------------
 
     try:
         await context.bot.set_message_reaction(
@@ -1267,15 +1350,13 @@ async def name_reaction(update, context):
             flush=True,
         )
 
-    # -----------------------------------------------------
-    # دعاء باسم الشخص الذي ذكر المالك
-    # -----------------------------------------------------
-
     dua = random.choice(DUAS).strip()
 
     await message.reply_text(
         f"🤲 {sender_name}, {dua}"
     )
+
+    return True
 
 
 # =========================================================
@@ -1311,15 +1392,20 @@ HELP_TEXT = """
 
 🇺🇸 <b>American</b>
 /us word
+/us slowly word
 امريكي word
+امريكي بطيء word
 
 🇬🇧 <b>British</b>
 /uk word
+/uk slowly word
 بريطاني word
+بريطاني بطيء word
 
 🗣️ <b>Both</b>
 /pr word
 انطق word
+انطق بطيء word
 
 🤖 <b>AI</b>
 /ai your request
@@ -2075,14 +2161,16 @@ async def us_command(update, context):
     ):
         return
 
-    text = get_target_text(
+    text, slow = get_pronunciation_target(
         update.effective_message
     )
 
     if not text:
 
         await update.effective_message.reply_text(
-            "Usage: /us word"
+            "Usage:\n"
+            "/us word\n"
+            "/us slowly word"
         )
 
         return
@@ -2091,6 +2179,7 @@ async def us_command(update, context):
         update,
         text,
         "US",
+        slow=slow,
     )
 
 
@@ -2106,14 +2195,16 @@ async def uk_command(update, context):
     ):
         return
 
-    text = get_target_text(
+    text, slow = get_pronunciation_target(
         update.effective_message
     )
 
     if not text:
 
         await update.effective_message.reply_text(
-            "Usage: /uk word"
+            "Usage:\n"
+            "/uk word\n"
+            "/uk slowly word"
         )
 
         return
@@ -2122,6 +2213,7 @@ async def uk_command(update, context):
         update,
         text,
         "UK",
+        slow=slow,
     )
 
 
@@ -2218,6 +2310,37 @@ async def arabic_command_handler(update, context):
 
         return
 
+    slow = False
+
+    # -----------------------------------------------------
+    # Arabic pronunciation slow mode
+    #
+    # انطق بطيء hello
+    # أمريكي بطيء hello
+    # بريطاني بطيء hello
+    # -----------------------------------------------------
+
+    if action in {
+        "us",
+        "uk",
+        "pr",
+    }:
+
+        if argument:
+
+            arg_parts = argument.split(
+                maxsplit=1
+            )
+
+            if arg_parts[0].strip() == "بطيء":
+
+                slow = True
+
+                if len(arg_parts) == 2:
+                    argument = arg_parts[1].strip()
+                else:
+                    argument = get_reply_text(message)
+
     if not argument:
         argument = get_reply_text(message)
 
@@ -2277,6 +2400,7 @@ async def arabic_command_handler(update, context):
             update,
             argument,
             "US",
+            slow=slow,
         )
 
     elif action == "uk":
@@ -2285,6 +2409,7 @@ async def arabic_command_handler(update, context):
             update,
             argument,
             "UK",
+            slow=slow,
         )
 
     elif action == "pr":
@@ -2293,6 +2418,7 @@ async def arabic_command_handler(update, context):
             update,
             argument,
             "BOTH",
+            slow=slow,
         )
 
 
@@ -2318,23 +2444,35 @@ async def normal_message_handler(update, context):
         "supergroup",
     ]
 
+    # -----------------------------------------------------
     # في الخاص فقط نتحقق من الاعتماد
+    # -----------------------------------------------------
+
     if (
         not is_group
         and not is_approved(user.id)
     ):
         return
 
+    text = message.text.strip()
+
     # -----------------------------------------------------
     # 1. الاسم / Tag / Reply
+    #
+    # إذا ذُكر اسم المالك:
+    # ❤️ Reaction + دعاء
+    #
+    # هذا مستقل عن التصحيح التلقائي.
     # -----------------------------------------------------
 
-    await name_reaction(
+    name_triggered = await name_reaction(
         update,
         context,
     )
 
-    text = message.text.strip()
+    # -----------------------------------------------------
+    # 2. Arabic commands
+    # -----------------------------------------------------
 
     first_word = text.split(
         maxsplit=1
@@ -2350,7 +2488,7 @@ async def normal_message_handler(update, context):
         return
 
     # -----------------------------------------------------
-    # Talk mode
+    # 3. Talk mode
     # -----------------------------------------------------
 
     is_reply_to_bot = (
@@ -2362,7 +2500,9 @@ async def normal_message_handler(update, context):
 
     if user.id in talk_mode_users:
 
-        if is_group and not is_reply_to_bot:
+        # في المجموعات لا يعمل Talk Mode مع كل رسالة.
+        # يجب أن يكون هناك ذكر للاسم/Tag/Reply على المالك.
+        if is_group and not name_triggered:
             return
 
         reply = await talk_with_ai(
@@ -2375,7 +2515,13 @@ async def normal_message_handler(update, context):
         return
 
     # -----------------------------------------------------
-    # Auto correction in groups
+    # 4. Automatic correction in groups
+    #
+    # مهم:
+    # - الرسالة الصحيحة => لا رد
+    # - كلمة مكتوبة خطأ => تصحيح
+    # - جملة فيها خطأ => تصحيح
+    # - لا يوجد قلب أو دعاء إلا عند ذكر الاسم
     # -----------------------------------------------------
 
     if is_group:
@@ -2401,18 +2547,34 @@ async def normal_message_handler(update, context):
                 text
             )
 
+            correction_clean = (
+                correction.strip()
+                if correction
+                else ""
+            )
+
             if (
-                correction
-                and correction.strip().lower()
+                correction_clean
+                and correction_clean.lower()
                 not in {
                     "ok",
                     "ok.",
+                    "okay",
+                    "okay.",
                 }
             ):
 
                 await message.reply_text(
-                    f"💡 Correction hint:\n{correction}"
+                    f"💡 Correction:\n{correction_clean}"
                 )
+
+        return
+
+    # -----------------------------------------------------
+    # 5. في الخاص:
+    # الرسائل العادية لا يتم تحويلها تلقائيا إلى تصحيح.
+    # الأوامر وTalk Mode هي التي تتعامل معها.
+    # -----------------------------------------------------
 
 
 # =========================================================
@@ -2526,8 +2688,6 @@ def build_application():
 
         .concurrent_updates(4)
 
-        # Timeouts خاصة بطلبات getUpdates
-        # حتى لا يموت polling بسبب مشاكل الشبكة القصيرة
         .get_updates_connect_timeout(30)
         .get_updates_read_timeout(30)
         .get_updates_write_timeout(30)
@@ -2753,8 +2913,6 @@ def main():
 
     # -----------------------------------------------------
     # Telegram polling
-    # إذا حدث Bad Gateway / NetworkError
-    # يعيد بناء Application ويبدأ polling من جديد
     # -----------------------------------------------------
 
     first_run = True
