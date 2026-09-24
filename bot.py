@@ -183,7 +183,7 @@ def get_arguments(message):
         return ""
 
     parts = message.text.strip().split(maxsplit=1)
-   if len(parts) == 2:
+    if len(parts) == 2:
         return parts[1].strip()
 
     return ""
