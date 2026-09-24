@@ -445,12 +445,10 @@ Text:
 # =========================================================
 # AI FUNCTIONS — NATURAL & ORGANIZED ANSWERS
 # =========================================================
-# AI FUNCTIONS — NATURAL & ORGANIZED ANSWERS
-# =========================================================
 
-Async def correct_text(text):
-    Return await ask_groq(
-        F"""
+async def correct_text(text):
+    return await ask_groq(
+        f"""
 Correct this English text for an Arabic-speaking learner.
 
 Focus mainly on:
@@ -501,14 +499,14 @@ Rules:
 
 Text:
 {text}
-“””,
+""",
         1200,
     )
 
 
-Async def explain_text(text):
-    Return await ask_groq(
-        F”””
+async def explain_text(text):
+    return await ask_groq(
+        f"""
 Explain this English word or expression to an Arabic-speaking learner.
 
 The answer must be beautiful, organized, compact, and practical.
@@ -581,19 +579,19 @@ Rules:
 - Do not repeat the same information.
 - Do not force sections that are not relevant.
 - Do not ask a follow-up question.
-- Do not add introductions such as “Sure, let’s break it down.”
-- Do not end with “Would you like me to…?”
+- Do not add introductions such as "Sure, let's break it down."
+- Do not end with "Would you like me to...?"
 
 Word/expression:
 {text}
-“””,
+""",
         1100,
     )
 
 
-Async def synonyms_text(text):
-    Return await ask_groq(
-        F”””
+async def synonyms_text(text):
+    return await ask_groq(
+        f"""
 Give useful synonyms and genuine antonyms for this English word or expression.
 
 The answer must be beautiful, organized, compact, and always include examples.
@@ -659,14 +657,14 @@ Rules:
 
 Word:
 {text}
-“””,
+""",
         1100,
     )
 
 
-Async def antonyms_text(text):
-    Return await ask_groq(
-        F”””
+async def antonyms_text(text):
+    return await ask_groq(
+        f"""
 Give genuine and useful antonyms for this English word or expression.
 
 The answer must be beautiful, organized, compact, and always include examples.
@@ -715,14 +713,14 @@ Rules:
 
 Word:
 {text}
-“””,
+""",
         900,
     )
 
 
-Async def use_word(text):
-    Return await ask_groq(
-        F”””
+async def use_word(text):
+    return await ask_groq(
+        f"""
 Explain how to use this English word or expression naturally.
 
 The answer must be beautiful, organized, compact, and practical.
@@ -782,15 +780,15 @@ Rules:
 
 Word:
 {text}
-“””,
+""",
         1100,
     )
 
 
-Async def free_ai(text):
-    Return await ask_groq(
-        F”””
-Answer the user’s request directly and naturally.
+async def free_ai(text):
+    return await ask_groq(
+        f"""
+Answer the user's request directly and naturally.
 
 The user may ask about English, Arabic, vocabulary, grammar,
 Translation, pronunciation, or another topic.
@@ -813,94 +811,93 @@ Rules:
 - When giving antonyms, always give examples for the antonyms.
 - Keep examples compact: English line + Arabic line.
 - Give examples only when they genuinely help for general questions.
-- Do not repeat the user’s question.
+- Do not repeat the user's question.
 - Do not give a long introduction.
 - Do not add unrelated information.
-- Do not ask “Would you like me to…?”
+- Do not ask "Would you like me to...?"
 - Do not end with an unnecessary question.
 - Do not offer random topics or unrelated suggestions.
-- If the user’s message is short or casual, answer naturally and briefly.
+- If the user's message is short or casual, answer naturally and briefly.
 - Do not force a lesson when the user is simply chatting.
 - Keep the response proportional to the request.
 - Never sound like a customer-service script.
 
 User request:
 {text}
-“””,
+""",
         1000,
     )
 
 
-Async def talk_with_ai(text, user_name):
+async def talk_with_ai(text, user_name):
 
-    Sys_prompt = (
-        F”You are FixMyEnglish, a natural and friendly English conversation “
-        F”companion chatting with {user_name}. “
+    sys_prompt = (
+        f"You are FixMyEnglish, a natural and friendly English conversation "
+        f"companion chatting with {user_name}. "
 
-        “Your conversation should feel like a normal human conversation, “
-        “not like a customer-service bot, tutor script, or interview. “
+        "Your conversation should feel like a normal human conversation, "
+        "not like a customer-service bot, tutor script, or interview. "
 
-        “Respond to what the user actually says. “
-        “Do not use scripted greetings. “
-        “Do not repeat greetings. “
-        “Do not ask a question after every message. “
-        “Do not ask questions merely to keep the conversation alive. “
-        “Do not constantly suggest random topics. “
+        "Respond to what the user actually says. "
+        "Do not use scripted greetings. "
+        "Do not repeat greetings. "
+        "Do not ask a question after every message. "
+        "Do not ask questions merely to keep the conversation alive. "
+        "Do not constantly suggest random topics. "
 
-        “Never repeatedly say things like “
-        “’What’s on your mind?’, “
-        “’What would you like to talk about?’, or “
-        “’Would you like to practice English?’ “
+        "Never repeatedly say things like "
+        "'What's on your mind?', "
+        "'What would you like to talk about?', or "
+        "'Would you like to practice English?' "
 
-        “If the user gives a short casual reply such as “
-        “’Nothing’, ‘Nothing much’, ‘I’m tired’, ‘Yeah’, ‘No’, or ‘Okay’, “
-        “respond naturally and briefly. “
-        “Do not force another question or topic. “
+        "If the user gives a short casual reply such as "
+        "'Nothing', 'Nothing much', 'I'm tired', 'Yeah', 'No', or 'Okay', "
+        "respond naturally and briefly. "
+        "Do not force another question or topic. "
 
-        “If the user says something funny, respond naturally to the joke. “
-        “You can be light, witty, or playful when it fits the conversation, “
-        “but do not force jokes. “
+        "If the user says something funny, respond naturally to the joke. "
+        "You can be light, witty, or playful when it fits the conversation, "
+        "but do not force jokes. "
 
-        “If the user gives a direct instruction, follow it directly “
-        “instead of asking unnecessary questions. “
+        "If the user gives a direct instruction, follow it directly "
+        "instead of asking unnecessary questions. "
 
-        “If the user shares something, react naturally to what they shared “
-        “instead of immediately turning it into a question. “
+        "If the user shares something, react naturally to what they shared "
+        "instead of immediately turning it into a question. "
 
-        “If the user is practicing English, help naturally. “
-        “Correct English only when there is a useful mistake to correct. “
-        “Do not turn every message into a grammar lesson. “
-        “Keep corrections brief and practical. “
+        "If the user is practicing English, help naturally. "
+        "Correct English only when there is a useful mistake to correct. "
+        "Do not turn every message into a grammar lesson. "
+        "Keep corrections brief and practical. "
 
-        “Use mostly English, but use Arabic when it helps the learner “
-        “understand something clearly. “
+        "Use mostly English, but use Arabic when it helps the learner "
+        "understand something clearly. "
 
-        “If you explain a word, phrase, correction, synonym, antonym, “
-        “or usage during the conversation, always include at least one “
-        “natural example when an example is useful. “
+        "If you explain a word, phrase, correction, synonym, antonym, "
+        "or usage during the conversation, always include at least one "
+        "natural example when an example is useful. "
 
-        “Keep responses proportional to the user’s message. “
-        “Short message = usually short response. “
-        “Longer message = respond appropriately to its content. “
+        "Keep responses proportional to the user's message. "
+        "Short message = usually short response. "
+        "Longer message = respond appropriately to its content. "
 
-        “Do not end every response with a question. “
-        “It is completely fine to finish with a natural statement. “
+        "Do not end every response with a question. "
+        "It is completely fine to finish with a natural statement. "
 
-        “Do not offer unrelated help or random suggestions. “
-        “Do not sound repetitive or robotic. “
+        "Do not offer unrelated help or random suggestions. "
+        "Do not sound repetitive or robotic. "
 
-        “When formatting learning explanations, keep them organized and compact. “
-        “Use a clear title when useful, separators when useful, and **bold** “
-        “for the main word or important information. “
-        “For examples, use two compact lines: English first, Arabic second.”
+        "When formatting learning explanations, keep them organized and compact. "
+        "Use a clear title when useful, separators when useful, and **bold** "
+        "for the main word or important information. "
+        "For examples, use two compact lines: English first, Arabic second."
     )
 
-    Return await ask_groq(
-        Text,
+    return await ask_groq(
+        text,
         800,
-        System_prompt=sys_prompt,
+        system_prompt=sys_prompt,
     )
-
 
 
 # =========================================================
@@ -1734,7 +1731,6 @@ async def vocab_command(update, context):
 
 # =========================================================
 # ACCESS REQUEST
-
 # =========================================================
 # =========================================================
 # ACCESS REQUEST
@@ -2727,49 +2723,48 @@ async def arabic_command_handler(update, context):
 
 # =========================================================
 # NORMAL MESSAGE HANDLER
-
 # =========================================================
 
-Async def normal_message_handler(update, context):
+async def normal_message_handler(update, context):
 
-    Message = update.effective_message
-    Chat = update.effective_chat
+    message = update.effective_message
+    chat = update.effective_chat
 
-    If not message or not message.text:
-        Return
+    if not message or not message.text:
+        return
 
-    User = update.effective_user
+    user = update.effective_user
 
-    If not user:
-        Return
+    if not user:
+        return
 
-    Is_group = chat.type in [
-        “group”,
-        “supergroup”,
+    is_group = chat.type in [
+        "group",
+        "supergroup",
     ]
 
     # -----------------------------------------------------
     # في الخاص فقط نتحقق من اعتماد المستخدم
     # -----------------------------------------------------
 
-    If (
-        Not is_group
-        And not is_approved(user.id)
+    if (
+        not is_group
+        and not is_approved(user.id)
     ):
-        Return
+        return
 
     # -----------------------------------------------------
     # في المجموعات:
     # لا يعمل البوت إلا إذا كانت المجموعة معتمدة.
     # -----------------------------------------------------
 
-    If (
-        Is_group
-        And not is_group_approved(chat.id)
+    if (
+        is_group
+        and not is_group_approved(chat.id)
     ):
-        Return
+        return
 
-    Text = message.text.strip()
+    text = message.text.strip()
 
     # -----------------------------------------------------
     # 1. الاسم / Tag
@@ -2778,102 +2773,102 @@ Async def normal_message_handler(update, context):
     # ❤️ Reaction + دعاء
     # -----------------------------------------------------
 
-    Name_triggered = await name_reaction(
-        Update,
-        Context,
+    name_triggered = await name_reaction(
+        update,
+        context,
     )
 
     # -----------------------------------------------------
     # 2. Arabic commands
     # -----------------------------------------------------
 
-    First_word = text.split(
-        Maxsplit=1
+    first_word = text.split(
+        maxsplit=1
     )[0].lower()
 
-    If first_word in ARABIC_COMMANDS:
+    if first_word in ARABIC_COMMANDS:
 
-        Await arabic_command_handler(
-            Update,
-            Context,
+        await arabic_command_handler(
+            update,
+            context,
         )
 
-        Return
+        return
 
     # -----------------------------------------------------
     # 3. Talk mode
     # -----------------------------------------------------
 
-    Is_reply_to_bot = (
-        Message.reply_to_message
-        And message.reply_to_message.from_user
-        And message.reply_to_message.from_user.id
+    is_reply_to_bot = (
+        message.reply_to_message
+        and message.reply_to_message.from_user
+        and message.reply_to_message.from_user.id
         == context.bot.id
     )
 
-    If user.id in talk_mode_users:
+    if user.id in talk_mode_users:
 
-        If is_group and not name_triggered:
-            Return
+        if is_group and not name_triggered:
+            return
 
-        Reply = await talk_with_ai(
-            Text,
-            User.first_name,
+        reply = await talk_with_ai(
+            text,
+            user.first_name,
         )
 
-        Await message.reply_text(reply)
+        await message.reply_text(reply)
 
-        Return
+        return
 
     # -----------------------------------------------------
     # 4. Automatic correction in groups
     # -----------------------------------------------------
 
-    If is_group:
+    if is_group:
 
-        Words = text.split()
+        words = text.split()
 
-        Is_english = (
-            Bool(
-                Re.search(
-                    R”[A-Za-z]”,
-                    Text,
+        is_english = (
+            bool(
+                re.search(
+                    r"[A-Za-z]",
+                    text,
                 )
             )
-            And not re.search(
-                R”[\u0600-\u06FF]”,
-                Text,
+            and not re.search(
+                r"[\u0600-\u06FF]",
+                text,
             )
         )
 
-        If is_english and 1 <= len(words) <= 20:
+        if is_english and 1 <= len(words) <= 20:
 
-            Correction = await auto_correct_chat(
-                Text
+            correction = await auto_correct_chat(
+                text
             )
 
-            Correction_clean = (
-                Correction.strip()
-                If correction
-                Else “”
+            correction_clean = (
+                correction.strip()
+                if correction
+                else ""
             )
 
-            If (
-                Correction_clean
-                And correction_clean.lower()
-                Not in {
-                    “ok”,
-                    “ok.”,
-                    “okay”,
-                    “okay.”,
+            if (
+                correction_clean
+                and correction_clean.lower()
+                not in {
+                    "ok",
+                    "ok.",
+                    "okay",
+                    "okay.",
                 }
             ):
 
-                Await message.reply_text(
-                    F”💡 Correction:\n{correction_clean}”
+                await message.reply_text(
+                    f"💡 Correction:\n{correction_clean}"
                 )
 
-        Return
+        return
 
     # -----------------------------------------------------
     # 5. في الخاص:
@@ -3321,5 +3316,5 @@ def main():
             first_run = False
 
 
-if name == "main":
+if __name__ == "__main__":
     main()
