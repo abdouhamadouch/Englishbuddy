@@ -1,4 +1,4 @@
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: import os
+import os
 import json
 import re
 import random
@@ -183,7 +183,7 @@ def get_arguments(message):
         return ""
 
     parts = message.text.strip().split(maxsplit=1)
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: if len(parts) == 2:
+   if len(parts) == 2:
         return parts[1].strip()
 
     return ""
@@ -351,7 +351,7 @@ async def correct_text(text):
     return await ask_groq(
         f"""
 Correct this English text for an Arabic-speaking learner.
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: Focus mainly on:
+ Focus mainly on:
 - spelling mistakes
 - typing mistakes
 - incorrect or missing words
@@ -506,7 +506,7 @@ Organize the answer clearly:
 
 Rules:
 - Give up to 5 useful synonyms.
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: - Prefer common, natural synonyms.
+- Prefer common, natural synonyms.
 - Explain an important difference in meaning or usage briefly when needed.
 - Give genuine antonyms only.
 - If there are fewer natural antonyms, give fewer.
@@ -658,7 +658,7 @@ async def talk_with_ai(text, user_name):
 
         "Your conversation should feel like a normal human conversation, "
         "not like a customer-service bot, tutor script, or interview. "
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: "Respond to what the user actually says. "
+        "Respond to what the user actually says. "
         "Do not use scripted greetings. "
         "Do not repeat greetings. "
         "Do not ask a question after every message. "
@@ -828,7 +828,7 @@ async def make_audio(text, voice):
                 flush=True,
             )
             return None
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: if os.path.getsize(filename) == 0:
+        if os.path.getsize(filename) == 0:
             print(
                 "TTS error: audio file is empty.",
                 flush=True,
@@ -982,7 +982,7 @@ DUAS = [
     "May Allah grant you clarity, patience, and success in all that is good.",
     "May Allah make your knowledge a source of benefit in this life and the Hereafter.",
     "May Allah bless you with sincere intentions and beneficial actions.",
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: "May Allah increase you in wisdom and guide you to the best choices.",
+    "May Allah increase you in wisdom and guide you to the best choices.",
     "May Allah make learning easy for you and put barakah in your efforts.",
     "May Allah grant you success beyond what you expect and goodness beyond what you imagine.",
     "May Allah protect you, guide you, and surround you with His mercy.",
@@ -1025,7 +1025,7 @@ DUAS = [
     "May Allah grant you a beautiful character, beneficial knowledge, and a heart attached to goodness.",
     "May Allah protect your heart from despair and fill it with hope, patience, and trust in Him.",
     "May Allah bless you with opportunities that bring you closer to what is good.",
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: "May Allah make your learning journey enjoyable, beneficial, and full of barakah.",
+    "May Allah make your learning journey enjoyable, beneficial, and full of barakah.",
     "May Allah grant you understanding deeper than memorization and wisdom greater than information.",
     "May Allah bless what you know, teach you what you do not know, and benefit you through both.",
     "May Allah make your knowledge a means of helping yourself, your family, and your community.",
@@ -1066,7 +1066,7 @@ DUAS = [
     "May Allah make your pursuit of knowledge a source of light, benefit, and reward.",
     "May Allah bless your efforts today and allow their goodness to continue into tomorrow.",
     "May Allah grant you success without arrogance, knowledge without pride, and goodness without showing off.",
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: "May Allah make your heart strong, your intentions sincere, and your journey blessed.",
+    "May Allah make your heart strong, your intentions sincere, and your journey blessed.",
     "May Allah grant you the patience to learn, the wisdom to understand, and the courage to apply what you learn.",
     "May Allah fill your life with moments that increase you in faith, knowledge, gratitude, and peace.",
     "May Allah grant you beneficial knowledge and make you a means through which others benefit.",
@@ -1385,7 +1385,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.effective_message.reply_text(
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: "👋 Welcome to <b>FixMyEnglish Pro</b>!\n\n"
+        "👋 Welcome to <b>FixMyEnglish Pro</b>!\n\n"
         "🌍 Translation\n"
         "✍️ English correction\n"
         "📖 Word explanations\n"
@@ -1591,7 +1591,7 @@ async def access_callback(update, context):
         return
 
     if action == "approve":
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: add_approved(user_id)
+        add_approved(user_id)
         remove_pending(user_id)
 
         await query.edit_message_text(
@@ -2029,7 +2029,7 @@ async def use_command(update, context):
 async def ai_command(update, context):
 
     chat = update.effective_chat
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: if (
+    if (
         chat.type == "private"
         and not is_approved(
             update.effective_user.id
@@ -2270,7 +2270,7 @@ async def arabic_command_handler(update, context):
             argument,
             "US",
         )
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: elif action == "uk":
+   elif action == "uk":
 
         await send_pronunciation(
             update,
@@ -2460,7 +2460,7 @@ def run_flask():
 async def set_command_menu(application):
 
     try:
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: await application.bot.set_my_commands(
+ await application.bot.set_my_commands(
             [
                 ("start", "Start FixMyEnglish"),
                 ("help", "Show commands"),
@@ -2666,7 +2666,7 @@ def build_application():
             stats_command,
         )
     )
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: application.add_handler(
+    application.add_handler(
         CallbackQueryHandler(
             access_callback
         )
