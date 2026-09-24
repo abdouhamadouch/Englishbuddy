@@ -1184,8 +1184,8 @@ async def name_is_tagged(update, context):
 
     for entity in entities:
 
-        if entity.type == "text_mention":
-[9/24/2026 1:45 PM] أبو عبد الله عبدالكريم: if (
+    if entity.type == "text_mention":
+    if (
                 entity.user
                 and entity.user.id == OWNER_ID
             ):
@@ -1193,7 +1193,7 @@ async def name_is_tagged(update, context):
 
         elif entity.type == "mention":
 
-            if not OWNER_USERNAME:
+     if not OWNER_USERNAME:
                 continue
 
             mentioned_username = text[
@@ -1201,7 +1201,7 @@ async def name_is_tagged(update, context):
                 entity.offset + entity.length
             ].lower().lstrip("@")
 
-            if mentioned_username == OWNER_USERNAME:
+    if mentioned_username == OWNER_USERNAME:
                 return True
 
     return False
