@@ -937,7 +937,7 @@ Rules:
 4. If there is a mistake:
    Use this short format:
 
-   ❌ Original:
+     Original:
    [original]
 
    ✅ Correct:
