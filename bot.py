@@ -450,7 +450,7 @@ Text:
 
 Async def correct_text(text):
     Return await ask_groq(
-        F”””
+        F"""
 Correct this English text for an Arabic-speaking learner.
 
 Focus mainly on:
