@@ -1,0 +1,4 @@
+flask
+groq
+python-telegram-bot==22.8
+edge-tts
