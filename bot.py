@@ -1185,7 +1185,7 @@ async def name_is_tagged(update, context):
     for entity in entities:
 
         if entity.type == "text_mention":
-        if (
+           if (
                 entity.user
                 and entity.user.id == OWNER_ID
             ):
