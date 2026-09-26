@@ -6,6 +6,7 @@ import tempfile
 import threading
 import asyncio
 import time
+import html
 from pathlib import Path
 
 from flask import Flask
@@ -50,6 +51,7 @@ UK_VOICE = "en-GB-SoniaNeural"
 USERS_FILE = Path("users.json")
 PENDING_FILE = Path("pending_users.json")
 VOCAB_FILE = Path("vocab_bank.json")
+AUTOCORRECT_FILE = Path("autocorrect_groups.json")
 
 app = Flask(__name__)
 
@@ -91,6 +93,19 @@ def save_json(path, data):
             print("Save JSON error:", repr(e), flush=True)
 
 
+# Groups where automatic correction has been turned OFF
+disabled_autocorrect_groups = load_json(
+    AUTOCORRECT_FILE,
+    [],
+) if AUTOCORRECT_FILE.exists() else []
+
+disabled_autocorrect_groups = {
+    int(x)
+    for x in disabled_autocorrect_groups
+    if str(x).lstrip("-").isdigit()
+}
+
+
 approved_users = load_json(USERS_FILE, [])
 pending_users = load_json(PENDING_FILE, [])
 vocab_bank = load_json(VOCAB_FILE, {})
@@ -108,7 +123,6 @@ pending_users = [
 ]
 
 
-# =========================================================
 # =========================================================
 # ACCESS
 # =========================================================
@@ -168,10 +182,7 @@ approved_groups = [
 
 
 def is_group_approved(chat_id):
-    return (
-        is_owner(OWNER_ID)
-        or chat_id in approved_groups
-    )
+    return chat_id in approved_groups
 
 
 def add_approved_group(chat_id):
@@ -190,6 +201,26 @@ def remove_approved_group(chat_id):
             GROUPS_FILE,
             approved_groups,
         )
+
+
+# =========================================================
+# AUTO CORRECTION GROUP SETTINGS
+# =========================================================
+
+def is_autocorrect_enabled(chat_id):
+    return chat_id not in disabled_autocorrect_groups
+
+
+def set_autocorrect_enabled(chat_id, enabled):
+    if enabled:
+        disabled_autocorrect_groups.discard(chat_id)
+    else:
+        disabled_autocorrect_groups.add(chat_id)
+
+    save_json(
+        AUTOCORRECT_FILE,
+        list(disabled_autocorrect_groups),
+    )
 
 
 # =========================================================
@@ -323,14 +354,64 @@ def split_long_text(text, max_length=3900):
     return result
 
 
+def format_ai_response(text):
+    """
+    Convert AI markdown-style bold into real Telegram bold,
+    remove unwanted stars, and keep bullet points clean.
+    """
+
+    if not text:
+        return ""
+
+    text = html.escape(str(text))
+
+    text = re.sub(
+        r"\*\*(.+?)\*\*",
+        r"<b>\1</b>",
+        text,
+        flags=re.DOTALL,
+    )
+
+    text = re.sub(
+        r"(?m)^\s*\*\s+",
+        "• ",
+        text,
+    )
+
+    text = text.replace("*", "")
+
+    return text.strip()
+
+
 async def send_long_reply(update, text):
     message = update.effective_message
 
     if not message:
         return
 
-    for part in split_long_text(text):
-        await message.reply_text(part)
+    formatted = format_ai_response(text)
+
+    for part in split_long_text(formatted):
+        try:
+            await message.reply_text(
+                part,
+                parse_mode="HTML",
+            )
+
+        except Exception as e:
+            print(
+                "Formatted AI reply error:",
+                repr(e),
+                flush=True,
+            )
+
+            await message.reply_text(
+                re.sub(
+                    r"<[^>]+>",
+                    "",
+                    part,
+                )
+            )
 
 
 # =========================================================
@@ -351,7 +432,9 @@ def _ask_groq_sync(prompt, max_tokens=1200, system_prompt=None):
             "Do not ask unnecessary follow-up questions. "
             "When explaining English to an Arabic speaker, use Arabic "
             "where it makes the explanation clearer. "
-            "Never reveal internal reasoning."
+            "Never reveal internal reasoning. "
+            "Keep answers organized with clear line breaks. "
+            "Do not use decorative stars."
         )
 
         response = groq_client.chat.completions.create(
@@ -434,6 +517,7 @@ Requirements:
 - Do not add introductions such as "Here is the translation".
 - Return the translation directly.
 - Do not ask a question at the end.
+- Do not use decorative stars.
 
 Text:
 {text}
@@ -464,10 +548,10 @@ Use this clean and compact structure:
 ✍️ CORRECTION
 ━━━━━━━━━━━━━━━━━━
 
-✅ Correct:
+Correct:
 [corrected text]
 
-📝 Changes:
+Changes:
 
 1️⃣ [mistake] → [correction]
 🇩🇿 [very short explanation in Arabic]
@@ -493,7 +577,8 @@ Rules:
 - Mention only useful corrections.
 - If a word is obviously mistyped, infer the intended word when the context is clear.
 - Keep each item compact: English line + Arabic line.
-- Use bold for important words with **bold**.
+- Mark important information clearly.
+- Do not use decorative stars.
 - Do not ask a follow-up question.
 - Do not add unnecessary information.
 
@@ -516,41 +601,41 @@ Use this structure:
 📖 WORD EXPLANATION
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Word: **[word]** /[pronunciation]/
-🏷️ Part of Speech: **[verb / noun / adjective / adverb / expression]**
-🇩🇿 Main Meaning: **[main Arabic meaning]**
+🔤 Word: [word] /[pronunciation]/
+🏷️ Part of Speech: [verb / noun / adjective / adverb / expression]
+🇩🇿 Main Meaning: [main Arabic meaning]
 
 ━━━━━━━━━━━━━━━━━━
 
 📚 MEANINGS & USE
 
-1️⃣ **[Meaning 1]**
+1️⃣ [Meaning 1]
 [short, clear English definition]
-🇩🇿 **[Arabic meaning/explanation]**
+🇩🇿 [Arabic meaning/explanation]
 
-📝 Example: [natural English example with the target word in **bold**]
+📝 Example: [natural English example]
 🇩🇿 [natural Arabic translation]
 
-🔄 Synonyms: **[synonym]** — **[synonym]** — **[synonym]**
+🔄 Synonyms: [synonym] — [synonym] — [synonym]
 🇩🇿 [Arabic meanings]
 
 ━━━━━━━━━━━━━━━━━━
 
-2️⃣ **[Meaning 2]**
+2️⃣ [Meaning 2]
 [short, clear English definition]
-🇩🇿 **[Arabic meaning/explanation]**
+🇩🇿 [Arabic meaning/explanation]
 
-📝 Example: [natural English example with the target word in **bold**]
+📝 Example: [natural English example]
 🇩🇿 [natural Arabic translation]
 
-🔄 Synonyms: **[synonym]** — **[synonym]** — **[synonym]**
+🔄 Synonyms: [synonym] — [synonym] — [synonym]
 🇩🇿 [Arabic meanings]
 
 ━━━━━━━━━━━━━━━━━━
 
 🔗 COMMON PATTERNS
 
-**[pattern / preposition / collocation]**
+[pattern / preposition / collocation]
 🇩🇿 [Arabic meaning]
 
 📝 Example: [natural English example]
@@ -565,7 +650,7 @@ Rules:
 - Put the most common meaning first.
 - If the word has important verb and noun meanings, separate them clearly.
 - Also separate adjective or adverb meanings when they are common and useful.
-- Include common prepositions such as **depend on**, **interested in**, or **aware of** when genuinely relevant.
+- Include common prepositions such as depend on, interested in, or aware of when genuinely relevant.
 - Include useful common collocations and fixed expressions when relevant.
 - Give synonyms that match the specific meaning.
 - Do not invent meanings, synonyms, prepositions, collocations, or examples.
@@ -575,7 +660,7 @@ Rules:
 - Use natural English examples.
 - Make Arabic translations natural, not word-for-word.
 - Keep each item compact: English line + Arabic line.
-- Use **bold** for the target word and important information.
+- Do not use decorative stars.
 - Do not repeat the same information.
 - Do not force sections that are not relevant.
 - Do not ask a follow-up question.
@@ -601,26 +686,26 @@ Use this structure:
 🔄 SYNONYMS
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Word: **{text}**
-🇩🇿 Meaning: **[main Arabic meaning]**
+🔤 Word: [word]
+🇩🇿 Meaning: [main Arabic meaning]
 
-1️⃣ **[Synonym]** — [Arabic meaning]
+1️⃣ [Synonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the synonym]
 🇩🇿 [Arabic translation]
 
-2️⃣ **[Synonym]** — [Arabic meaning]
+2️⃣ [Synonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the synonym]
 🇩🇿 [Arabic translation]
 
-3️⃣ **[Synonym]** — [Arabic meaning]
+3️⃣ [Synonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the synonym]
 🇩🇿 [Arabic translation]
 
-4️⃣ **[Synonym]** — [Arabic meaning]
+4️⃣ [Synonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the synonym]
 🇩🇿 [Arabic translation]
 
-5️⃣ **[Synonym]** — [Arabic meaning]
+5️⃣ [Synonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the synonym]
 🇩🇿 [Arabic translation]
 
@@ -629,11 +714,11 @@ Use this structure:
 ↔️ ANTONYMS
 ━━━━━━━━━━━━━━━━━━
 
-1️⃣ **[Antonym]** — [Arabic meaning]
+1️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
-2️⃣ **[Antonym]** — [Arabic meaning]
+2️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
@@ -650,8 +735,7 @@ Rules:
 - Never invent words just to fill the list.
 - If the word has different meanings, choose synonyms according to the specific meaning.
 - Keep the answer compact.
-- Use **bold** for important words.
-- Keep each example compact: English line + Arabic line.
+- Do not use decorative stars.
 - Do not ask a follow-up question.
 - Do not add unnecessary introduction.
 
@@ -674,26 +758,26 @@ Use this structure:
 ↔️ ANTONYMS
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Word: **{text}**
-🇩🇿 Meaning: **[main Arabic meaning]**
+🔤 Word: [word]
+🇩🇿 Meaning: [main Arabic meaning]
 
-1️⃣ **[Antonym]** — [Arabic meaning]
+1️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
-2️⃣ **[Antonym]** — [Arabic meaning]
+2️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
-3️⃣ **[Antonym]** — [Arabic meaning]
+3️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
-4️⃣ **[Antonym]** — [Arabic meaning]
+4️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
-5️⃣ **[Antonym]** — [Arabic meaning]
+5️⃣ [Antonym] — [Arabic meaning]
 📝 Example: [natural English sentence using the antonym]
 🇩🇿 [Arabic translation]
 
@@ -707,7 +791,7 @@ Rules:
 - Consider the specific meaning of the word.
 - If the word has several meanings, choose antonyms for the relevant meaning.
 - Keep the answer concise.
-- Use **bold** for important words.
+- Do not use decorative stars.
 - Keep each item compact: English line + Arabic line.
 - Do not ask a follow-up question.
 
@@ -730,21 +814,21 @@ Use this structure:
 🧩 WORD USAGE
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Word: **{text}**
-🇩🇿 Meaning: **[main Arabic meaning]**
+🔤 Word: [word]
+🇩🇿 Meaning: [main Arabic meaning]
 
 ━━━━━━━━━━━━━━━━━━
 
 📚 HOW TO USE IT
 
-**[short practical explanation]**
+[short practical explanation]
 🇩🇿 [Arabic explanation]
 
 ━━━━━━━━━━━━━━━━━━
 
 🔗 COMMON PATTERNS
 
-**[preposition / collocation / sentence pattern]**
+[preposition / collocation / sentence pattern]
 🇩🇿 [Arabic meaning]
 
 📝 Example: [natural English example]
@@ -754,10 +838,10 @@ Use this structure:
 
 📝 EXAMPLES
 
-1️⃣ [natural English example with the target word in **bold**]
+1️⃣ [natural English example with the target word]
 🇩🇿 [Arabic translation]
 
-2️⃣ [natural English example with the target word in **bold**]
+2️⃣ [natural English example with the target word]
 🇩🇿 [Arabic translation]
 
 ━━━━━━━━━━━━━━━━━━
@@ -773,7 +857,7 @@ Rules:
 - Do not over-explain grammar.
 - Do not force sections that are not useful.
 - Keep the answer concise and practical.
-- Use **bold** for important words.
+- Do not use decorative stars.
 - Keep each item compact: English line + Arabic line.
 - Do not ask a follow-up question.
 - Do not add a long introduction.
@@ -785,15 +869,145 @@ Word:
     )
 
 
+# =========================================================
+# WORD ROOT
+# =========================================================
+
+async def root_word(text):
+    return await ask_groq(
+        f"""
+Explain the word root of the English word:
+
+{text}
+
+Use this structure:
+
+🌱 WORD ROOT
+━━━━━━━━━━━━━━━━━━
+
+🔤 Word: [word]
+
+🌱 Root: [root]
+🇩🇿 Meaning of the root: [Arabic meaning]
+
+━━━━━━━━━━━━━━━━━━
+
+🔗 RELATED WORDS
+
+1️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+2️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+3️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+4️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+5️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+Rules:
+- Identify the actual linguistic root when possible.
+- Do not confuse a root with a prefix, suffix, or simple word stem.
+- Include useful English words genuinely related to the same root.
+- Every related word must have its Arabic meaning and an English example with Arabic translation.
+- Do not invent relationships.
+- If the word is not clearly derived from a common English root, explain that briefly.
+- Keep the answer concise and useful.
+- Do not use decorative stars.
+- Do not ask a follow-up question.
+
+Word:
+{text}
+""",
+        1300,
+    )
+
+
+# =========================================================
+# WORD FAMILY
+# =========================================================
+
+async def word_family(text):
+    return await ask_groq(
+        f"""
+Give the English word family of:
+
+{text}
+
+Use this structure:
+
+🧩 WORD FAMILY
+━━━━━━━━━━━━━━━━━━
+
+🔤 Base word: [word]
+
+1️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+2️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+3️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+4️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+5️⃣ [word] — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 Example: [natural English sentence]
+🇩🇿 [Arabic translation]
+
+Rules:
+- Include common and useful members of the word family.
+- Include noun, verb, adjective, and adverb forms when they genuinely exist.
+- Include negative forms such as prefixes only when they are genuinely useful.
+- Do not invent forms.
+- Every word must have its Arabic meaning and an English example with Arabic translation.
+- Show the part of speech clearly.
+- Prefer common modern English forms.
+- Keep the answer concise.
+- Do not use decorative stars.
+- Do not ask a follow-up question.
+
+Word:
+{text}
+""",
+        1300,
+    )
+
+
 async def free_ai(text):
     return await ask_groq(
         f"""
 Answer the user's request directly and naturally.
 
 The user may ask about English, Arabic, vocabulary, grammar,
-Translation, pronunciation, or another topic.
+translation, pronunciation, or another topic.
 
-Make the answer beautiful, very organized, and easy to read.
+Make the answer beautiful, organized, and easy to read.
 
 Rules:
 - Understand exactly what the user is asking.
@@ -802,10 +1016,11 @@ Rules:
 - For English-learning questions, organize the explanation clearly.
 - Use a clear title when useful.
 - Separate different meanings, cases, or uses.
+- Use clear line breaks.
 - Use separators such as:
   ━━━━━━━━━━━━━━━━━━
-  When they improve readability.
-- Put the main word and important information in **bold**.
+  when they improve readability.
+- Mark the main word and important information clearly.
 - When explaining vocabulary, always give natural examples.
 - When giving synonyms, always give examples for the useful synonyms.
 - When giving antonyms, always give examples for the antonyms.
@@ -821,6 +1036,8 @@ Rules:
 - Do not force a lesson when the user is simply chatting.
 - Keep the response proportional to the request.
 - Never sound like a customer-service script.
+- Do not use decorative stars.
+- Do not fill the answer with unnecessary formatting.
 
 User request:
 {text}
@@ -829,10 +1046,14 @@ User request:
     )
 
 
+# =========================================================
+# TALK MODE
+# =========================================================
+
 async def talk_with_ai(text, user_name):
 
     sys_prompt = (
-        f"You are FixMyEnglish, a natural and friendly English conversation "
+        f"You are FixMyEnglish, a natural and friendly conversation "
         f"companion chatting with {user_name}. "
 
         "Your conversation should feel like a normal human conversation, "
@@ -850,17 +1071,24 @@ async def talk_with_ai(text, user_name):
         "'What would you like to talk about?', or "
         "'Would you like to practice English?' "
 
-        "If the user gives a short casual reply such as "
-        "'Nothing', 'Nothing much', 'I'm tired', 'Yeah', 'No', or 'Okay', "
-        "respond naturally and briefly. "
-        "Do not force another question or topic. "
-
         "If the user says something funny, respond naturally to the joke. "
-        "You can be light, witty, or playful when it fits the conversation, "
-        "but do not force jokes. "
+        "You can laugh, be light, witty, or playful when it fits. "
+        "If the user is joking, joke back naturally. "
+        "Do not force jokes when the user is serious. "
+
+        "If the user asks a serious question, answer it seriously "
+        "and directly. "
 
         "If the user gives a direct instruction, follow it directly "
         "instead of asking unnecessary questions. "
+
+        "If the user asks you to make a dua for someone, give an "
+        "appropriate dua directly. "
+
+        "If the user asks for a joke, give a joke directly. "
+
+        "If the user asks for translation, explanation, correction, "
+        "or another clear task, do the task directly. "
 
         "If the user shares something, react naturally to what they shared "
         "instead of immediately turning it into a question. "
@@ -873,10 +1101,6 @@ async def talk_with_ai(text, user_name):
         "Use mostly English, but use Arabic when it helps the learner "
         "understand something clearly. "
 
-        "If you explain a word, phrase, correction, synonym, antonym, "
-        "or usage during the conversation, always include at least one "
-        "natural example when an example is useful. "
-
         "Keep responses proportional to the user's message. "
         "Short message = usually short response. "
         "Longer message = respond appropriately to its content. "
@@ -887,10 +1111,11 @@ async def talk_with_ai(text, user_name):
         "Do not offer unrelated help or random suggestions. "
         "Do not sound repetitive or robotic. "
 
-        "When formatting learning explanations, keep them organized and compact. "
-        "Use a clear title when useful, separators when useful, and **bold** "
-        "for the main word or important information. "
-        "For examples, use two compact lines: English first, Arabic second."
+        "For longer answers, organize them with clear line breaks. "
+        "Use a short title or separator only when useful. "
+        "Mark important words clearly. "
+        "Do not use decorative stars. "
+        "Do not turn every casual reply into a formatted lesson."
     )
 
     return await ask_groq(
@@ -934,13 +1159,13 @@ Rules:
 4. If there is a mistake:
    Use this short format:
 
-     Original:
+   Original:
    [original]
 
-   ✅ Correct:
+   Correct:
    [corrected version]
 
-   📝 Why:
+   Why:
    [very short explanation]
 
 5. Never invent a mistake.
@@ -948,6 +1173,7 @@ Rules:
 7. Do not ask a question.
 8. Keep the response short.
 9. If the text is not actually English, return exactly: OK
+10. Do not use decorative stars.
 
 Text:
 {text}
@@ -993,6 +1219,7 @@ Rules:
 - Give standard IPA.
 - Give pronunciation for this word only.
 - Keep it concise.
+- Do not use decorative stars.
 
 Word:
 {word}
@@ -1029,6 +1256,7 @@ Rules:
 - Give standard IPA.
 - Give pronunciation for this word only.
 - Keep it concise.
+- Do not use decorative stars.
 
 Word:
 {word}
@@ -1132,10 +1360,10 @@ async def send_pronunciation(update, word, dialect, slow=False):
 
     word_count = len(word.split())
 
-    if word_count > 70:
+    if word_count > 500:
         await message.reply_text(
             "❌ The text is too long for pronunciation.\n"
-            "The maximum is 70 words."
+            "The maximum is 500 words."
         )
         return
 
@@ -1163,7 +1391,10 @@ async def send_pronunciation(update, word, dialect, slow=False):
         else:
             info = await both_pronunciation(word)
 
-        await message.reply_text(info)
+        await send_long_reply(
+            update,
+            info,
+        )
 
     audio = await make_audio(
         word,
@@ -1361,7 +1592,6 @@ def name_is_mentioned(text):
 
     normalized = text.lower().strip()
 
-    # توحيد بعض أشكال الحروف العربية
     normalized = re.sub(
         r"[إأآا]",
         "ا",
@@ -1401,7 +1631,6 @@ async def name_is_tagged(update, context):
 
     sender = update.effective_user
 
-    # حفظ username الخاص بالمالك عندما يرسل رسالة
     if (
         sender
         and sender.id == OWNER_ID
@@ -1421,7 +1650,6 @@ async def name_is_tagged(update, context):
 
     for entity in entities:
 
-        # @username mention
         if entity.type == "mention":
 
             if not OWNER_USERNAME:
@@ -1435,7 +1663,6 @@ async def name_is_tagged(update, context):
             if mentioned_username == OWNER_USERNAME:
                 return True
 
-        # Telegram mention بالاسم مباشرة
         elif entity.type == "text_mention":
 
             if (
@@ -1456,17 +1683,14 @@ async def name_reaction(update, context):
 
     text = message.text or message.caption or ""
 
-    # البحث عن اسم المالك
     mentioned = name_is_mentioned(text)
 
-    # البحث عن Tag / Mention
     if not mentioned:
         mentioned = await name_is_tagged(
             update,
             context,
         )
 
-    # لا يوجد اسم أو Tag → لا شيء
     if not mentioned:
         return False
 
@@ -1481,7 +1705,6 @@ async def name_reaction(update, context):
     else:
         sender_name = "friend"
 
-    # ❤️ Reaction
     try:
         await context.bot.set_message_reaction(
             chat_id=message.chat_id,
@@ -1498,7 +1721,6 @@ async def name_reaction(update, context):
             flush=True,
         )
 
-    # 🤲 دعاء
     dua = random.choice(DUAS).strip()
 
     await message.reply_text(
@@ -1506,7 +1728,6 @@ async def name_reaction(update, context):
     )
 
     return True
-
 
 
 # =========================================================
@@ -1527,6 +1748,14 @@ HELP_TEXT = """
 📖 <b>Explanation</b>
 /ex word
 اشرح word
+
+🌱 <b>Word Root</b>
+/root word
+جذر word
+
+🧩 <b>Word Family</b>
+/fw word
+عائلة word
 
 🔄 <b>Synonyms</b>
 /syn word
@@ -1566,6 +1795,10 @@ HELP_TEXT = """
 📚 <b>Vocabulary</b>
 /vocab — عرض الكلمات المحفوظة
 
+⚙️ <b>Group Auto Correction</b>
+/on — تشغيل التصحيح التلقائي
+/off — إيقاف التصحيح التلقائي
+
 💬 <b>Reply mode</b>
 
 Reply to a message and send:
@@ -1573,6 +1806,8 @@ Reply to a message and send:
 /tr
 /cor
 /ex
+/root
+/fw
 /syn
 /ant
 /use
@@ -1683,10 +1918,19 @@ async def talk_command(update, context):
 
         talk_mode_users.add(user.id)
 
-        await update.effective_message.reply_text(
-            "💬 Talk mode enabled.\n"
-            "You can chat naturally with me."
-        )
+        if chat.type in [
+            "group",
+            "supergroup",
+        ]:
+            await update.effective_message.reply_text(
+                "💬 Talk mode enabled.\n"
+                "Reply to one of my messages to talk with me."
+            )
+        else:
+            await update.effective_message.reply_text(
+                "💬 Talk mode enabled.\n"
+                "You can chat naturally with me."
+            )
 
 
 async def vocab_command(update, context):
@@ -1730,8 +1974,67 @@ async def vocab_command(update, context):
 
 
 # =========================================================
-# ACCESS REQUEST
+# AUTO CORRECTION COMMANDS
 # =========================================================
+
+async def on_command(update, context):
+
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    if chat.type not in [
+        "group",
+        "supergroup",
+    ]:
+        await update.effective_message.reply_text(
+            "⚙️ This command is for groups only."
+        )
+        return
+
+    if not is_group_approved(chat.id):
+        return
+
+    set_autocorrect_enabled(
+        chat.id,
+        True,
+    )
+
+    await update.effective_message.reply_text(
+        "✅ Automatic correction is now ON in this group."
+    )
+
+
+async def off_command(update, context):
+
+    chat = update.effective_chat
+
+    if not chat:
+        return
+
+    if chat.type not in [
+        "group",
+        "supergroup",
+    ]:
+        await update.effective_message.reply_text(
+            "⚙️ This command is for groups only."
+        )
+        return
+
+    if not is_group_approved(chat.id):
+        return
+
+    set_autocorrect_enabled(
+        chat.id,
+        False,
+    )
+
+    await update.effective_message.reply_text(
+        "💤 Automatic correction is now OFF in this group."
+    )
+
+
 # =========================================================
 # ACCESS REQUEST
 # =========================================================
@@ -1920,7 +2223,7 @@ async def access_callback(update, context):
             parse_mode="HTML",
         )
 
-        try:            
+        try:
             await context.bot.send_message(
                 chat_id=target_id,
                 text=(
@@ -2029,6 +2332,7 @@ async def access_callback(update, context):
                 repr(e),
                 flush=True,
             )
+
 
 # =========================================================
 # OWNER COMMANDS
@@ -2328,6 +2632,68 @@ async def ex_command(update, context):
     )
 
 
+async def root_command(update, context):
+
+    chat = update.effective_chat
+
+    if (
+        chat.type == "private"
+        and not is_approved(
+            update.effective_user.id
+        )
+    ):
+        return
+
+    text = get_target_text(
+        update.effective_message
+    )
+
+    if not text:
+
+        await update.effective_message.reply_text(
+            "Usage: /root word\n\n"
+            "Or reply to a message with /root"
+        )
+
+        return
+
+    await send_long_reply(
+        update,
+        await root_word(text),
+    )
+
+
+async def fw_command(update, context):
+
+    chat = update.effective_chat
+
+    if (
+        chat.type == "private"
+        and not is_approved(
+            update.effective_user.id
+        )
+    ):
+        return
+
+    text = get_target_text(
+        update.effective_message
+    )
+
+    if not text:
+
+        await update.effective_message.reply_text(
+            "Usage: /fw word\n\n"
+            "Or reply to a message with /fw"
+        )
+
+        return
+
+    await send_long_reply(
+        update,
+        await word_family(text),
+    )
+
+
 async def syn_command(update, context):
 
     chat = update.effective_chat
@@ -2555,6 +2921,8 @@ ARABIC_COMMANDS = {
     "ترجم": "tr",
     "صحح": "cor",
     "اشرح": "ex",
+    "جذر": "root",
+    "عائلة": "fw",
     "مرادف": "syn",
     "ضد": "ant",
     "وظف": "use",
@@ -2611,14 +2979,6 @@ async def arabic_command_handler(update, context):
 
     slow = False
 
-    # -----------------------------------------------------
-    # Arabic pronunciation slow mode
-    #
-    # انطق بطيء hello
-    # أمريكي بطيء hello
-    # بريطاني بطيء hello
-    # -----------------------------------------------------
-
     if action in {
         "us",
         "uk",
@@ -2670,6 +3030,20 @@ async def arabic_command_handler(update, context):
         await send_long_reply(
             update,
             await explain_text(argument),
+        )
+
+    elif action == "root":
+
+        await send_long_reply(
+            update,
+            await root_word(argument),
+        )
+
+    elif action == "fw":
+
+        await send_long_reply(
+            update,
+            await word_family(argument),
         )
 
     elif action == "syn":
@@ -2768,9 +3142,6 @@ async def normal_message_handler(update, context):
 
     # -----------------------------------------------------
     # 1. الاسم / Tag
-    #
-    # إذا ذُكر اسم المالك:
-    # ❤️ Reaction + دعاء
     # -----------------------------------------------------
 
     name_triggered = await name_reaction(
@@ -2796,7 +3167,7 @@ async def normal_message_handler(update, context):
         return
 
     # -----------------------------------------------------
-    # 3. Talk mode
+    # 3. هل الرسالة Reply على البوت؟
     # -----------------------------------------------------
 
     is_reply_to_bot = (
@@ -2806,9 +3177,13 @@ async def normal_message_handler(update, context):
         == context.bot.id
     )
 
+    # -----------------------------------------------------
+    # 4. Talk mode
+    # -----------------------------------------------------
+
     if user.id in talk_mode_users:
 
-        if is_group and not name_triggered:
+        if is_group and not is_reply_to_bot:
             return
 
         reply = await talk_with_ai(
@@ -2816,15 +3191,21 @@ async def normal_message_handler(update, context):
             user.first_name,
         )
 
-        await message.reply_text(reply)
+        await send_long_reply(
+            update,
+            reply,
+        )
 
         return
 
     # -----------------------------------------------------
-    # 4. Automatic correction in groups
+    # 5. Automatic correction in groups
     # -----------------------------------------------------
 
     if is_group:
+
+        if not is_autocorrect_enabled(chat.id):
+            return
 
         words = text.split()
 
@@ -2864,14 +3245,15 @@ async def normal_message_handler(update, context):
                 }
             ):
 
-                await message.reply_text(
-                    f"💡 Correction:\n{correction_clean}"
+                await send_long_reply(
+                    update,
+                    f"💡 Correction:\n{correction_clean}",
                 )
 
         return
 
     # -----------------------------------------------------
-    # 5. في الخاص:
+    # 6. في الخاص:
     # الرسائل العادية لا يتم تصحيحها تلقائيًا.
     # -----------------------------------------------------
 
@@ -2926,13 +3308,10 @@ def run_flask():
 # =========================================================
 # TELEGRAM COMMAND MENU
 # =========================================================
+
 async def set_command_menu(application):
 
     try:
-
-        # =====================================================
-        # COMMANDS FOR ALL USERS
-        # =====================================================
 
         user_commands = [
             ("start", "Start FixMyEnglish"),
@@ -2942,9 +3321,13 @@ async def set_command_menu(application):
             ("tr", "Translate"),
             ("cor", "Correct English"),
             ("ex", "Explain"),
+            ("root", "Word root"),
+            ("fw", "Word family"),
             ("syn", "Synonyms"),
             ("ant", "Antonyms"),
             ("use", "Use a word"),
+            ("on", "Turn auto correction on"),
+            ("off", "Turn auto correction off"),
             ("us", "American pronunciation"),
             ("uk", "British pronunciation"),
             ("pr", "Both pronunciations"),
@@ -2959,20 +3342,16 @@ async def set_command_menu(application):
             pool_timeout=10,
         )
 
-        # =====================================================
-        # OWNER COMMANDS
-        # =====================================================
-
         if OWNER_ID != 0:
 
             owner_commands = user_commands + [
-            ("add", "Add user"),
-            ("del", "Remove user"),
-            ("list", "List users"),
-            ("approve", "Approve user"),
-            ("reject", "Reject user"),
-            ("stats", "Show statistics"),
-        ]
+                ("add", "Add user"),
+                ("del", "Remove user"),
+                ("list", "List users"),
+                ("approve", "Approve user"),
+                ("reject", "Reject user"),
+                ("stats", "Show statistics"),
+            ]
 
             await application.bot.set_my_commands(
                 owner_commands,
@@ -3078,6 +3457,20 @@ def build_application():
 
     application.add_handler(
         CommandHandler(
+            "root",
+            root_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "fw",
+            fw_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
             "syn",
             syn_command,
         )
@@ -3094,6 +3487,20 @@ def build_application():
         CommandHandler(
             "use",
             use_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "on",
+            on_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "off",
+            off_command,
         )
     )
 
@@ -3178,6 +3585,18 @@ def build_application():
             filters.TEXT & ~filters.COMMAND,
             normal_message_handler,
         )
+    )
+
+    # =====================================================
+    # GROUP ACCESS REQUEST
+    # =====================================================
+
+    application.add_handler(
+        MessageHandler(
+            filters.ALL,
+            group_access_request,
+        ),
+        group=1,
     )
 
     application.add_error_handler(
