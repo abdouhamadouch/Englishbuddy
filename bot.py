@@ -544,6 +544,40 @@ async def free_ai(text):
     )
 
 
+async def pronunciation_info(text, dialect):
+    country = "American" if dialect == "US" else "British"
+    return await ask_groq(
+        f"""
+Give the {country} English pronunciation for this word/phrase.
+Do not use decorative stars. Keep it very brief.
+
+Use this structure:
+
+🗣️ {country} Pronunciation
+━━━━━━━━━━━━━━━━━━
+🔤 Word: {text}
+🔠 IPA: [phonetic spelling]
+""",
+        300
+    )
+
+async def both_pronunciation(text):
+    return await ask_groq(
+        f"""
+Give both American and British English pronunciation for this word/phrase.
+Do not use decorative stars. Keep it very brief.
+
+Use this structure:
+
+🗣️ Pronunciation
+━━━━━━━━━━━━━━━━━━
+🔤 Word: {text}
+🇺🇸 US: [American IPA]
+🇬🇧 UK: [British IPA]
+""",
+        300
+    )
+
 
 async def translate_text(text):
     return await ask_groq(
