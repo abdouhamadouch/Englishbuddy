@@ -543,40 +543,55 @@ async def free_ai(text):
         )
     )
 
-
 async def pronunciation_info(text, dialect):
     country = "American" if dialect == "US" else "British"
-    return await ask_groq(
-        f"""
-Give the {country} English pronunciation for this word/phrase.
-Do not use decorative stars. Keep it very brief.
+    flag = "🇺🇸" if dialect == "US" else "🇬🇧"
+    
+    prompt = f"""
+Provide the {country} English pronunciation (IPA) and the Arabic meaning for the following word/phrase: "{text}"
 
-Use this structure:
+You must return ONLY the filled structure below. Do not use decorative stars.
 
 🗣️ {country} Pronunciation
 ━━━━━━━━━━━━━━━━━━
-🔤 Word: {text}
-🔠 IPA: [phonetic spelling]
-""",
-        300
-    )
+
+🔤 Word:
+{text}
+
+{flag} IPA:
+[write the real IPA here]
+
+🇩🇿 Meaning:
+[write the short Arabic meaning here]
+━━━━━━━━━━━━━━━━━━
+"""
+    return await ask_groq(prompt, 350)
+
 
 async def both_pronunciation(text):
-    return await ask_groq(
-        f"""
-Give both American and British English pronunciation for this word/phrase.
-Do not use decorative stars. Keep it very brief.
+    prompt = f"""
+Provide both the American and British English pronunciation (IPA) and the Arabic meaning for the following word/phrase: "{text}"
 
-Use this structure:
+You must return ONLY the filled structure below. Do not use decorative stars.
 
 🗣️ Pronunciation
 ━━━━━━━━━━━━━━━━━━
-🔤 Word: {text}
-🇺🇸 US: [American IPA]
-🇬🇧 UK: [British IPA]
-""",
-        300
-    )
+
+🔤 Word:
+{text}
+
+🇺🇸 US:
+[write the real American IPA here]
+
+🇬🇧 UK:
+[write the real British IPA here]
+
+🇩🇿 Meaning:
+[write the short Arabic meaning here]
+━━━━━━━━━━━━━━━━━━
+"""
+    return await ask_groq(prompt, 350)
+
 
 
 async def translate_text(text):
