@@ -873,67 +873,120 @@ Word:
 # WORD ROOT
 # =========================================================
 
+# =========================================================
+# WORD ROOT
+# =========================================================
+
 async def root_word(text):
     return await ask_groq(
         f"""
-Explain the word root of the English word:
+Analyze the English word and explain its underlying classical root
+(Latin, Greek, or another important source root) when one genuinely exists.
 
+The purpose is to help an English learner understand how the word
+was formed and how the same root appears in other English words.
+
+Word:
 {text}
 
 Use this structure:
 
-🌱 WORD ROOT
+🌱 **WORD ROOT & MORPHOLOGY**
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Word: [word]
+🔤 **Word:** [original word]
 
-🌱 Root: [root]
-🇩🇿 Meaning of the root: [Arabic meaning]
+🌱 **Root:** [root]
+🇩🇿 **Core meaning:** [Arabic meaning of the root]
+
+📌 **Root idea:** [short, clear explanation of the original/basic idea
+of the root, such as "throw / cast" for JECT]
 
 ━━━━━━━━━━━━━━━━━━
 
-🔗 RELATED WORDS
+🧩 **WORD STRUCTURE**
 
-1️⃣ [word] — [part of speech]
+🔹 **Prefix:** [prefix or None]
+🇩🇿 [meaning of the prefix]
+
+🔹 **Root:** [root]
+
+🔹 **Suffix:** [suffix or None]
+🇩🇿 [meaning of the suffix]
+
+🔗 **Formation:**
+[prefix] + [root] + [suffix] → [word]
+
+━━━━━━━━━━━━━━━━━━
+
+🌿 **WORDS BUILT FROM THE SAME ROOT**
+
+1️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+🧩 [prefix] + [root] → [short explanation of how the root contributes to the meaning]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-2️⃣ [word] — [part of speech]
+2️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+🧩 [prefix] + [root] → [short explanation]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-3️⃣ [word] — [part of speech]
+3️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+🧩 [prefix] + [root] → [short explanation]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-4️⃣ [word] — [part of speech]
+4️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+🧩 [prefix] + [root] → [short explanation]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-5️⃣ [word] — [part of speech]
+5️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+🧩 [prefix] + [root] → [short explanation]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
+
+━━━━━━━━━━━━━━━━━━
+
+💡 **ROOT IN ONE IDEA**
+[Give one short sentence explaining the central idea of the root
+and how the prefixes change its meaning.]
 
 Rules:
-- Identify the actual linguistic root when possible.
-- Do not confuse a root with a prefix, suffix, or simple word stem.
-- Include useful English words genuinely related to the same root.
-- Every related word must have its Arabic meaning and an English example with Arabic translation.
-- Do not invent relationships.
-- If the word is not clearly derived from a common English root, explain that briefly.
-- Keep the answer concise and useful.
-- Do not use decorative stars.
+- Focus on the actual classical root, not synonyms.
+- A root is NOT the same thing as a word family.
+- Prefer important Latin and Greek roots that help learners understand
+  many English words.
+- For example, JECT means roughly "throw / cast"; show how prefixes
+  such as IN-, RE-, E-, PRO-, OB-, SUB-, DE-, or INTER- change the idea.
+- Identify the prefix and suffix when they genuinely exist.
+- Explain the meaning contributed by the prefix.
+- Show how the root contributes to the final meaning.
+- Include 4–6 common and useful English words built from the same root.
+- Do not include words merely because they are synonyms.
+- Do not include unrelated words with similar spelling.
+- Do not invent etymological relationships.
+- If a word has no useful or reliable classical root, say so briefly
+  instead of inventing one.
+- Keep etymology accurate but learner-friendly.
+- Examples must be natural, short, and useful.
+- Every derived word must have an Arabic meaning and an English example
+  with Arabic translation.
+- Use **bold** for important words and headings.
+- Do not use decorative star characters such as * or ** as visible text.
+- Markdown bold formatting is allowed.
+- Keep the answer organized, beautiful, and concise.
 - Do not ask a follow-up question.
 
 Word:
 {text}
 """,
-        1300,
+        1600,
     )
 
 
@@ -948,102 +1001,79 @@ Give the English word family of:
 
 {text}
 
+The goal is to show the different grammatical and derivational forms
+that belong to the same English word family.
+
 Use this structure:
 
-🧩 WORD FAMILY
+🧩 **WORD FAMILY**
 ━━━━━━━━━━━━━━━━━━
 
-🔤 Base word: [word]
+🔤 **Base word:** [base word]
+🇩🇿 **Meaning:** [Arabic meaning]
 
-1️⃣ [word] — [part of speech]
+━━━━━━━━━━━━━━━━━━
+
+🌿 **FAMILY MEMBERS**
+
+1️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-2️⃣ [word] — [part of speech]
+2️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-3️⃣ [word] — [part of speech]
+3️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-4️⃣ [word] — [part of speech]
+4️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-5️⃣ [word] — [part of speech]
+5️⃣ **[word]** — [part of speech]
 🇩🇿 [Arabic meaning]
-📝 Example: [natural English sentence]
+📝 [natural English example]
 🇩🇿 [Arabic translation]
+
+━━━━━━━━━━━━━━━━━━
+
+💡 **PATTERN**
+[Briefly explain how the forms are related:
+verb → noun, adjective → adverb, negative form, etc.]
 
 Rules:
-- Include common and useful members of the word family.
+- Focus ONLY on the word family.
+- Do NOT explain the classical/Latin/Greek root.
+- Do NOT give synonyms unless they are genuinely part of the same
+  word family.
+- Include common and useful members of the family.
 - Include noun, verb, adjective, and adverb forms when they genuinely exist.
-- Include negative forms such as prefixes only when they are genuinely useful.
+- Include negative forms with prefixes only when they are genuinely
+  established members of the family.
 - Do not invent forms.
-- Every word must have its Arabic meaning and an English example with Arabic translation.
+- Do not include words merely because they have a similar meaning.
+- Every word must have its Arabic meaning and a natural English example
+  with Arabic translation.
 - Show the part of speech clearly.
 - Prefer common modern English forms.
-- Keep the answer concise.
-- Do not use decorative stars.
+- Use **bold** for important words and headings.
+- Do not use decorative star characters such as * or ** as visible text.
+- Markdown bold formatting is allowed.
+- Keep the answer organized, beautiful, and concise.
 - Do not ask a follow-up question.
 
 Word:
 {text}
 """,
-        1300,
+        1500,
     )
 
-
-async def free_ai(text):
-    return await ask_groq(
-        f"""
-Answer the user's request directly and naturally.
-
-The user may ask about English, Arabic, vocabulary, grammar,
-translation, pronunciation, or another topic.
-
-Make the answer beautiful, organized, and easy to read.
-
-Rules:
-- Understand exactly what the user is asking.
-- Give the useful answer first.
-- Use Arabic when it helps an Arabic-speaking learner.
-- For English-learning questions, organize the explanation clearly.
-- Use a clear title when useful.
-- Separate different meanings, cases, or uses.
-- Use clear line breaks.
-- Use separators such as:
-  ━━━━━━━━━━━━━━━━━━
-  when they improve readability.
-- Mark the main word and important information clearly.
-- When explaining vocabulary, always give natural examples.
-- When giving synonyms, always give examples for the useful synonyms.
-- When giving antonyms, always give examples for the antonyms.
-- Keep examples compact: English line + Arabic line.
-- Give examples only when they genuinely help for general questions.
-- Do not repeat the user's question.
-- Do not give a long introduction.
-- Do not add unrelated information.
-- Do not ask "Would you like me to...?"
-- Do not end with an unnecessary question.
-- Do not offer random topics or unrelated suggestions.
-- If the user's message is short or casual, answer naturally and briefly.
-- Do not force a lesson when the user is simply chatting.
-- Keep the response proportional to the request.
-- Never sound like a customer-service script.
-- Do not use decorative stars.
-- Do not fill the answer with unnecessary formatting.
-
-User request:
-{text}
-""",
-        1000,
-    )
 
 
 # =========================================================
