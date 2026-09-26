@@ -529,29 +529,49 @@ Text:
 # =========================================================
 # AI FUNCTIONS — NATURAL & ORGANIZED ANSWERS
 # =========================================================
-
 async def correct_text(text):
-    return await ask_groq(
-        f"""
-Correct this English text for an Arabic-speaking learner.
 
-Focus mainly on:
-- spelling mistakes
-- typing mistakes
-- incorrect or missing words
-- important grammar mistakes that affect correctness or meaning
+    prompt = f"""
+Correct and evaluate this English text for an Arabic-speaking learner.
 
-Do not rewrite correct English just to make it sound more advanced.
+Your job is to identify REAL and IMPORTANT mistakes only.
 
-Use this clean and compact structure:
+There are two possible cases:
+
+CASE 1 — The text is correct:
+- Clearly say that the text is correct.
+- Then suggest ONE more natural or fluent way to say it, if a natural alternative exists.
+- Make it clear that the alternative is a STYLE suggestion, not a correction.
+
+Use:
 
 ✍️ CORRECTION
 ━━━━━━━━━━━━━━━━━━
 
-Correct:
-[corrected text]
+✅ No important mistakes found.
 
-Changes:
+💡 More natural:
+[more natural version]
+
+━━━━━━━━━━━━━━━━━━
+
+🇩🇿 Meaning:
+[natural Arabic meaning]
+
+CASE 2 — The text contains mistakes:
+- Identify only genuine mistakes.
+- Show the original mistake → correction.
+- Give a very short Arabic explanation.
+- Then provide the corrected text.
+- If useful, provide a more natural version separately.
+- Do not treat a style preference as a mistake.
+
+Use:
+
+✍️ CORRECTION
+━━━━━━━━━━━━━━━━━━
+
+❌ Changes:
 
 1️⃣ [mistake] → [correction]
 🇩🇿 [very short explanation in Arabic]
@@ -561,32 +581,61 @@ Changes:
 
 Only include changes that actually exist.
 
+✅ Corrected:
+[corrected text]
+
+💡 More natural:
+[more natural version only if it is genuinely useful]
+
 ━━━━━━━━━━━━━━━━━━
 
 🇩🇿 Meaning:
 [natural Arabic meaning]
 
-If there are no important mistakes, return only:
-
-✅ No important mistakes found.
+IMPORTANT FOR LONG TEXT:
+- Find the real mistakes throughout the whole text.
+- List each useful correction briefly.
+- Then give the complete corrected text.
+- Do not rewrite the whole text merely for style.
+- A natural version may be given separately if it adds real value.
 
 Rules:
-- Do not invent mistakes.
+- Never invent a mistake.
 - Do not criticize the learner.
 - Do not give a long grammar lesson.
-- Mention only useful corrections.
+- Do not change correct wording just because you prefer another expression.
+- Do not replace a correct word with a synonym just because it sounds more natural.
 - If a word is obviously mistyped, infer the intended word when the context is clear.
-- Keep each item compact: English line + Arabic line.
-- Mark important information clearly.
+- Distinguish clearly between CORRECTION and STYLE.
+- If the text is already correct, do NOT say there is an error.
+- Keep explanations short.
 - Do not use decorative stars.
 - Do not ask a follow-up question.
 - Do not add unnecessary information.
+- Always return a non-empty response.
+- If the text is not actually English, do not invent corrections.
 
 Text:
 {text}
-""",
-        1200,
-    )
+"""
+
+    for attempt in range(4):
+        try:
+            result = await ask_groq(prompt, 1200)
+
+            if result and result.strip():
+                return result.strip()
+
+        except Exception:
+            pass
+
+        if attempt < 3:
+            await asyncio.sleep(1)
+
+    return "⚠️ I couldn't check the text right now. Please try again."
+
+
+
 
 
 async def explain_text(text):
@@ -1158,6 +1207,8 @@ async def talk_with_ai(text, user_name):
 # =========================================================
 # AUTOMATIC CORRECTION
 # =========================================================
+# AUTOMATIC CORRECTION
+# =========================================================
 
 async def auto_correct_chat(text):
 
@@ -1174,7 +1225,7 @@ Rules:
    - Do not replace a correct word with another word just because another
      word sounds more natural.
 
-2. If the message is an English sentence:
+2. If the message is an English sentence or text:
    - Correct genuine spelling mistakes.
    - Correct genuine grammar mistakes.
    - Correct a wrong or missing word when the meaning clearly requires it.
@@ -1204,95 +1255,28 @@ Rules:
 8. Keep the response short.
 9. If the text is not actually English, return exactly: OK
 10. Do not use decorative stars.
+11. IMPORTANT: Always return a response. Never return an empty response.
 
 Text:
 {text}
 """
 
-    return await ask_groq(
-        prompt,
-        350,
-    )
+    # Retry up to 4 times if AI returns an empty response
+    for attempt in range(4):
+        try:
+            result = await ask_groq(prompt, 350)
 
+            if result and result.strip():
+                return result.strip()
 
-async def pronunciation_info(word, dialect):
+        except Exception:
+            pass
 
-    if dialect == "US":
-        name = "American English"
-        flag = "🇺🇸"
-    else:
-        name = "British English"
-        flag = "🇬🇧"
+        if attempt < 3:
+            await asyncio.sleep(1)
 
-    return await ask_groq(
-        f"""
-Give accurate pronunciation information for this English word
-in {name}.
-
-Use EXACTLY this format:
-
-🔊 Pronunciation
-━━━━━━━━━━━━
-
-🔤 Word:
-{word}
-
-{flag} IPA:
-[IPA]
-
-🇩🇿 Meaning:
-[short Arabic meaning]
-
-━━━━━━━━━━━━
-
-Rules:
-- Give standard IPA.
-- Give pronunciation for this word only.
-- Keep it concise.
-- Do not use decorative stars.
-
-Word:
-{word}
-""",
-        700,
-    )
-
-
-async def both_pronunciation(word):
-    return await ask_groq(
-        f"""
-Give accurate pronunciation information for this English word.
-
-Use EXACTLY this format:
-
-🔊 Pronunciation
-━━━━━━━━━━━━
-
-🔤 Word:
-{word}
-
-🇺🇸 American:
-[IPA]
-
-🇬🇧 British:
-[IPA]
-
-🇩🇿 Meaning:
-[short Arabic meaning]
-
-━━━━━━━━━━━━
-
-Rules:
-- Give standard IPA.
-- Give pronunciation for this word only.
-- Keep it concise.
-- Do not use decorative stars.
-
-Word:
-{word}
-""",
-        700,
-    )
+    # Never return an empty response
+    return "⚠️ I couldn't check the sentence right now. Please try again."
 
 
 # =========================================================
