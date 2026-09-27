@@ -1,18 +1,5 @@
 # analyze.py
 # FixMyEnglish - Word Analysis
-# Main analysis is shown first.
-# Every button sends a NEW message.
-# Each user has an independent analysis session.
-# Session lifetime: 20 minutes.
-#
-# IMPORTANT DESIGN:
-# - Creating an analysis session NEVER depends on all APIs succeeding.
-# - The main analysis is attempted first.
-# - Each feature fetches ONLY its own required data when requested.
-# - Failure of one feature never affects another feature.
-# - Failed/empty API results are NOT cached, so pressing the button
-#   again retries the request.
-# - A new analysis by the same user invalidates the old session.
 
 import asyncio
 import html
@@ -30,11 +17,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-SESSION_TTL = 20 * 60  # 20 minutes
+SESSION_TTL = 20 * 60
 
 _ask_groq = None
 _get_target_text = None
@@ -44,8 +27,14 @@ _is_approved = None
 _sessions = {}
 
 
+EXPIRED_TEXT = (
+    "⏳ This analysis session has expired.\n"
+    "Please use /analysis again to start a new session."
+)
+
+
 # ============================================================
-# CONFIGURE
+# CONFIG
 # ============================================================
 
 def configure(ask_groq_func, get_target_text_func, is_approved_func):
@@ -55,10 +44,6 @@ def configure(ask_groq_func, get_target_text_func, is_approved_func):
     _get_target_text = get_target_text_func
     _is_approved = is_approved_func
 
-
-# ============================================================
-# GENERAL HELPERS
-# ============================================================
 
 async def _call_approved(user_id):
     if not _is_approved:
@@ -75,6 +60,10 @@ async def _call_approved(user_id):
     except Exception:
         return False
 
+
+# ============================================================
+# WORD / SESSION
+# ============================================================
 
 def _clean_word(text):
     if not text:
@@ -100,12 +89,8 @@ def extract_word(text):
     return _clean_word(text)
 
 
-def _new_session_id():
-    return uuid.uuid4().hex[:12]
-
-
 def _create_session(user_id, word, data=None):
-    session_id = _new_session_id()
+    session_id = uuid.uuid4().hex[:12]
 
     _sessions[user_id] = {
         "session_id": session_id,
@@ -133,18 +118,12 @@ def _get_valid_session(user_id, session_id):
     return session
 
 
-EXPIRED_TEXT = (
-    "⏳ This analysis session has expired.\n"
-    "Please use /analysis again to start a new session."
-)
-
-
 # ============================================================
-# HTTP / API HELPERS
+# HTTP
 # ============================================================
 
 def _fetch_json_sync(url, timeout=12):
-    req = Request(
+    request = Request(
         url,
         headers={
             "User-Agent": "FixMyEnglish/1.0",
@@ -152,10 +131,10 @@ def _fetch_json_sync(url, timeout=12):
         },
     )
 
-    with urlopen(req, timeout=timeout) as response:
-        raw = response.read().decode("utf-8")
-
-    return json.loads(raw)
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(
+            response.read().decode("utf-8")
+        )
 
 
 async def _fetch_json(url, timeout=12):
@@ -174,7 +153,7 @@ async def _fetch_json(url, timeout=12):
 
 
 # ============================================================
-# DICTIONARY API
+# DICTIONARY
 # ============================================================
 
 async def _dictionary_data(word):
@@ -193,90 +172,72 @@ async def _dictionary_data(word):
     meanings = []
 
     for meaning in entry.get("meanings", []):
-        part_of_speech = meaning.get(
-            "partOfSpeech",
-            "",
-        )
+        pos = meaning.get("partOfSpeech", "")
 
         definitions = []
 
-        for item in meaning.get(
-            "definitions",
-            [],
-        ):
-            definition = item.get(
-                "definition",
-                "",
-            )
-
-            example = item.get(
-                "example",
-                "",
-            )
+        for item in meaning.get("definitions", []):
+            definition = item.get("definition", "")
 
             if definition:
-                definitions.append(
-                    {
-                        "definition": definition,
-                        "example": example,
-                    }
-                )
+                definitions.append({
+                    "definition": definition,
+                    "example": item.get("example", ""),
+                })
 
         if definitions:
-            meanings.append(
-                {
-                    "part_of_speech": part_of_speech,
-                    "definitions": definitions,
-                }
-            )
+            meanings.append({
+                "part_of_speech": pos,
+                "definitions": definitions,
+            })
 
     phonetics = []
 
-    for p in entry.get(
-        "phonetics",
-        [],
-    ):
-        text = p.get("text")
-        audio = p.get("audio")
+    for item in entry.get("phonetics", []):
+        text = item.get("text")
+        audio = item.get("audio")
 
         if text or audio:
-            phonetics.append(
-                {
-                    "text": text or "",
-                    "audio": audio or "",
-                }
-            )
+            phonetics.append({
+                "text": text or "",
+                "audio": audio or "",
+            })
 
     if not meanings and not phonetics:
         return None
 
     return {
-        "word": entry.get(
-            "word",
-            word,
-        ),
-        "phonetics": phonetics,
+        "word": entry.get("word", word),
         "meanings": meanings,
+        "phonetics": phonetics,
         "source": "Dictionary API",
     }
+
+
+async def _get_dictionary(session):
+    if session["data"].get("dictionary"):
+        return session["data"]["dictionary"]
+
+    result = await _dictionary_data(
+        session["word"]
+    )
+
+    if result:
+        session["data"]["dictionary"] = result
+
+    return result
 
 
 # ============================================================
 # DATAMUSE
 # ============================================================
 
-async def _datamuse(
-    word,
-    relation,
-    max_results=12,
-):
-    params = urlencode(
-        {
-            relation: word,
-            "max": max_results,
-            "md": "dp",
-        }
-    )
+async def _datamuse(word, relation, max_results=15):
+    params = urlencode({
+        relation: word,
+        "max": max_results,
+        "md": "dp",
+    })
 
     url = (
         "https://api.datamuse.com/words?"
@@ -288,37 +249,27 @@ async def _datamuse(
     if not isinstance(data, list):
         return None
 
-    results = []
+    result = []
 
     for item in data:
-        w = item.get(
-            "word",
-            "",
+        candidate = str(
+            item.get("word", "")
         ).strip()
 
-        if (
-            w
-            and w.lower() != word.lower()
-        ):
-            results.append(
-                {
-                    "word": w,
-                    "score": item.get(
-                        "score",
-                        0,
-                    ),
-                    "defs": item.get(
-                        "defs",
-                        [],
-                    ),
-                    "tags": item.get(
-                        "tags",
-                        [],
-                    ),
-                }
-            )
+        if not candidate:
+            continue
 
-    return results
+        if candidate.lower() == word.lower():
+            continue
+
+        result.append({
+            "word": candidate,
+            "score": item.get("score", 0),
+            "defs": item.get("defs", []),
+            "tags": item.get("tags", []),
+        })
+
+    return result
 
 
 # ============================================================
@@ -347,32 +298,22 @@ def _wordnet_sync(word):
                     synonyms.add(name)
 
                 for ant in lemma.antonyms():
-                    ant_name = ant.name().replace(
+                    name = ant.name().replace(
                         "_",
                         " ",
                     )
 
-                    if (
-                        ant_name.lower()
-                        != word.lower()
-                    ):
-                        antonyms.add(ant_name)
+                    if name.lower() != word.lower():
+                        antonyms.add(name)
 
-                for related in (
-                    lemma.derivationally_related_forms()
-                ):
-                    related_name = (
-                        related.name()
-                        .replace("_", " ")
+                for rel in lemma.derivationally_related_forms():
+                    name = rel.name().replace(
+                        "_",
+                        " ",
                     )
 
-                    if (
-                        related_name.lower()
-                        != word.lower()
-                    ):
-                        family.add(
-                            related_name
-                        )
+                    if name.lower() != word.lower():
+                        family.add(name)
 
         return {
             "synonyms": sorted(synonyms),
@@ -429,25 +370,21 @@ def _strip_wiki_markup(text):
         text,
     )
 
-    text = re.sub(
+    return re.sub(
         r"\s+",
         " ",
         text,
-    )
-
-    return text.strip()
+    ).strip()
 
 
-async def _wiktionary_etymology(word):
-    params = urlencode(
-        {
-            "action": "parse",
-            "page": word,
-            "prop": "wikitext",
-            "format": "json",
-            "origin": "*",
-        }
-    )
+async def _wiktionary_sections(word):
+    params = urlencode({
+        "action": "parse",
+        "page": word,
+        "prop": "wikitext",
+        "format": "json",
+        "origin": "*",
+    })
 
     url = (
         "https://en.wiktionary.org/w/api.php?"
@@ -457,274 +394,64 @@ async def _wiktionary_etymology(word):
     data = await _fetch_json(url)
 
     try:
-        text = (
-            data["parse"]
-            ["wikitext"]
-            ["*"]
-        )
+        text = data["parse"]["wikitext"]["*"]
     except Exception:
         return None
 
-    match = re.search(
-        r"===+\s*Etymology(?:\s+\d+)?\s*===+"
-        r"(.*?)(?=\n===|\Z)",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    if not match:
-        return None
-
-    result = _strip_wiki_markup(
-        match.group(1)
-    )
-
-    if len(result) > 700:
-        result = (
-            result[:700]
-            .rsplit(" ", 1)[0]
-            + "..."
+    def section(name):
+        pattern = (
+            rf"===+\s*{re.escape(name)}"
+            rf"(?:\s+\d+)?\s*===+"
+            rf"(.*?)(?=\n===|\Z)"
         )
 
-    return result or None
+        match = re.search(
+            pattern,
+            text,
+            flags=re.I | re.S,
+        )
+
+        if not match:
+            return ""
+
+        value = _strip_wiki_markup(
+            match.group(1)
+        )
+
+        if len(value) > 1000:
+            value = value[:1000].rsplit(
+                " ",
+                1,
+            )[0] + "..."
+
+        return value
+
+    return {
+        "etymology": section("Etymology"),
+        "pronunciation": section("Pronunciation"),
+        "usage": section("Usage notes"),
+    }
 
 
-# ============================================================
-# CACHE HELPERS
-#
-# IMPORTANT:
-# Empty/failing results are NEVER cached.
-# Therefore pressing a failed button retries.
-# ============================================================
+async def _get_wiktionary(session):
+    if session["data"].get("wiktionary"):
+        return session["data"]["wiktionary"]
 
-async def _get_dictionary_for_session(session):
-    cached = session["data"].get(
-        "dictionary"
-    )
-
-    if cached:
-        return cached
-
-    dictionary = await _dictionary_data(
+    result = await _wiktionary_sections(
         session["word"]
     )
 
-    if dictionary:
-        session["data"][
-            "dictionary"
-        ] = dictionary
-
-    return dictionary
-
-
-async def _get_synonym_data(session):
-    cached = session["data"].get(
-        "synonym_data"
-    )
-
-    if cached:
-        return cached
-
-    word = session["word"]
-
-    datamuse, wordnet = await asyncio.gather(
-        _datamuse(
-            word,
-            "rel_syn",
-        ),
-        _wordnet(word),
-    )
-
-    # If both sources failed, do NOT cache.
-    if not datamuse and not wordnet:
-        return {
-            "datamuse": datamuse or [],
-            "wordnet": wordnet or {},
-        }
-
-    result = {
-        "datamuse": datamuse or [],
-        "wordnet": wordnet or {},
-    }
-
-    session["data"][
-        "synonym_data"
-    ] = result
-
-    return result
-
-
-async def _get_antonym_data(session):
-    cached = session["data"].get(
-        "antonym_data"
-    )
-
-    if cached:
-        return cached
-
-    word = session["word"]
-
-    datamuse, wordnet = await asyncio.gather(
-        _datamuse(
-            word,
-            "rel_ant",
-        ),
-        _wordnet(word),
-    )
-
-    if not datamuse and not wordnet:
-        return {
-            "datamuse": datamuse or [],
-            "wordnet": wordnet or {},
-        }
-
-    result = {
-        "datamuse": datamuse or [],
-        "wordnet": wordnet or {},
-    }
-
-    session["data"][
-        "antonym_data"
-    ] = result
-
-    return result
-
-
-async def _get_family_data(session):
-    cached = session["data"].get(
-        "family_data"
-    )
-
-    if cached:
-        return cached
-
-    result = await _wordnet(
-        session["word"]
-    )
-
-    if not result or not result.get(
-        "family"
-    ):
-        return result or {}
-
-    session["data"][
-        "family_data"
-    ] = result
-
-    return result
-
-
-async def _get_similar_data(session):
-    cached = session["data"].get(
-        "similar_data"
-    )
-
-    if cached:
-        return cached
-
-    result = await _datamuse(
-        session["word"],
-        "sp",
-    )
-
-    if not result:
-        return []
-
-    session["data"][
-        "similar_data"
-    ] = result
-
-    return result
-
-
-async def _get_homophone_data(session):
-    cached = session["data"].get(
-        "homophone_data"
-    )
-
-    if cached:
-        return cached
-
-    word = session["word"]
-
-    dictionary, sound_alikes = await asyncio.gather(
-        _dictionary_data(word),
-        _datamuse(
-            word,
-            "sl",
-        ),
-    )
-
-    if dictionary:
-        session["data"][
-            "dictionary"
-        ] = dictionary
-
-    result = {
-        "dictionary": dictionary,
-        "sound_alikes": sound_alikes or [],
-    }
-
-    # Cache only if at least one source returned data.
-    if dictionary or sound_alikes:
-        session["data"][
-            "homophone_data"
-        ] = result
-
-    return result
-
-
-async def _get_etymology_data(session):
-    cached = session["data"].get(
-        "etymology_data"
-    )
-
-    if cached:
-        return cached
-
-    result = await _wiktionary_etymology(
-        session["word"]
-    )
-
-    if not result:
-        return ""
-
-    session["data"][
-        "etymology_data"
-    ] = result
-
-    return result
-
-
-async def _get_collocation_data(session):
-    cached = session["data"].get(
-        "collocation_data"
-    )
-
-    if cached:
-        return cached
-
-    result = await _datamuse(
-        session["word"],
-        "rel_trg",
-        max_results=12,
-    )
-
-    if not result:
-        return []
-
-    session["data"][
-        "collocation_data"
-    ] = result
+    if result:
+        session["data"]["wiktionary"] = result
 
     return result
 
 
 # ============================================================
-# DATA FORMATTING
+# HELPERS
 # ============================================================
 
-def _unique(items, limit=12):
+def _unique(items, limit=15):
     seen = set()
     result = []
 
@@ -748,7 +475,7 @@ def _unique(items, limit=12):
     return result
 
 
-def _get_meanings(dictionary):
+def _meanings(dictionary):
     if not dictionary:
         return []
 
@@ -758,88 +485,125 @@ def _get_meanings(dictionary):
         "meanings",
         [],
     ):
-        pos = meaning.get(
-            "part_of_speech",
-            "",
-        )
-
         for definition in meaning.get(
             "definitions",
             [],
         ):
-            result.append(
-                {
-                    "pos": pos,
-                    "definition": definition.get(
-                        "definition",
-                        "",
-                    ),
-                    "example": definition.get(
-                        "example",
-                        "",
-                    ),
-                }
-            )
+            result.append({
+                "pos": meaning.get(
+                    "part_of_speech",
+                    "word",
+                ),
+                "definition": definition.get(
+                    "definition",
+                    "",
+                ),
+                "example": definition.get(
+                    "example",
+                    "",
+                ),
+            })
 
     return result
 
 
-def _get_synonyms(data):
-    wn = data.get(
-        "wordnet",
-        {},
-    ) or {}
+# ============================================================
+# RELATION DATA
+# ============================================================
+
+async def _get_relation_data(session, kind):
+    key = kind + "_data"
+
+    if session["data"].get(key):
+        return session["data"][key]
+
+    word = session["word"]
+
+    if kind == "synonym":
+        results = await asyncio.gather(
+            _datamuse(word, "rel_syn"),
+            _wordnet(word),
+        )
+
+    elif kind == "antonym":
+        results = await asyncio.gather(
+            _datamuse(word, "rel_ant"),
+            _wordnet(word),
+        )
+
+    elif kind == "similar":
+        results = [
+            await _datamuse(
+                word,
+                "sp",
+            )
+        ]
+
+    elif kind == "homo":
+        results = await asyncio.gather(
+            _dictionary_data(word),
+            _datamuse(word, "sl"),
+        )
+
+    elif kind == "family":
+        results = [
+            await _wordnet(word)
+        ]
+
+    else:
+        return None
+
+    # Do NOT cache empty/failed results.
+    if not any(results):
+        return None
+
+    session["data"][key] = results
+
+    return results
+
+
+def _synonyms(data):
+    if not data:
+        return []
+
+    datamuse_data, wordnet_data = data
 
     return _unique(
-        [
-            *(
-                item["word"]
-                for item in data.get(
-                    "datamuse",
-                    [],
-                )
-            ),
-            *wn.get(
+        [x["word"] for x in (datamuse_data or [])]
+        + list(
+            (wordnet_data or {}).get(
                 "synonyms",
                 [],
-            ),
-        ],
-        12,
+            )
+        ),
+        15,
     )
 
 
-def _get_antonyms(data):
-    wn = data.get(
-        "wordnet",
-        {},
-    ) or {}
+def _antonyms(data):
+    if not data:
+        return []
+
+    datamuse_data, wordnet_data = data
 
     return _unique(
-        [
-            *(
-                item["word"]
-                for item in data.get(
-                    "datamuse",
-                    [],
-                )
-            ),
-            *wn.get(
+        [x["word"] for x in (datamuse_data or [])]
+        + list(
+            (wordnet_data or {}).get(
                 "antonyms",
                 [],
-            ),
-        ],
-        12,
+            )
+        ),
+        15,
     )
 
 
-def _get_word_family(data):
-    wn = data.get(
-        "wordnet",
-        {}
-    ) or {}
+def _family(data):
+    if not data or not data[0]:
+        return []
 
     return _unique(
-        wn.get(
+        data[0].get(
             "family",
             [],
         ),
@@ -851,9 +615,9 @@ def _get_word_family(data):
 # GROQ
 # ============================================================
 
-async def _groq_text(
+async def _groq(
     prompt,
-    max_tokens=300,
+    max_tokens=350,
 ):
     if not _ask_groq:
         return ""
@@ -864,11 +628,10 @@ async def _groq_text(
             max_tokens=max_tokens,
             system_prompt=(
                 "You are a precise English-learning assistant. "
-                "Use supplied source information when it is provided. "
-                "For general English-learning questions, you may use "
-                "well-established English knowledge. "
-                "Do not invent obscure facts, meanings, etymology, "
-                "pronunciation, or unsupported claims."
+                "Use established English knowledge only. "
+                "Do not invent etymology, CEFR levels, "
+                "pronunciation, slang, idioms, or usage facts. "
+                "If reliable information is unavailable, say so."
             ),
         )
 
@@ -878,9 +641,7 @@ async def _groq_text(
                 timeout=15,
             )
 
-        result = str(result).strip()
-
-        return result
+        return str(result).strip()
 
     except Exception:
         return ""
@@ -894,20 +655,20 @@ async def _arabic_meaning(
         return ""
 
     source = "\n".join(
-        f"- {m['pos']}: {m['definition']}"
-        for m in meanings[:4]
+        f"- {x['pos']}: {x['definition']}"
+        for x in meanings[:5]
     )
 
-    prompt = (
-        f"Give a concise Arabic meaning for the English "
-        f"word '{word}' based ONLY on these dictionary definitions:\n"
-        f"{source}\n\n"
-        "Return only the Arabic meaning, with no explanation."
-    )
+    return await _groq(
+        f"""
+Give the concise Arabic meaning of the English word "{word}".
 
-    return await _groq_text(
-        prompt,
-        max_tokens=120,
+Use ONLY these dictionary meanings:
+{source}
+
+Return only the Arabic meaning.
+""",
+        100,
     )
 
 
@@ -919,48 +680,25 @@ async def _build_main_analysis(
     word,
     dictionary,
 ):
-    meanings = _get_meanings(
-        dictionary
-    )
-
-    # --------------------------------------------------------
-    # Dictionary API worked
-    # --------------------------------------------------------
+    meanings = _meanings(dictionary)
 
     if meanings:
         first = meanings[0]
 
-        pos = first["pos"] or "word"
-        definition = first["definition"]
-
-        paragraph = (
+        text = (
             f"<b>{html.escape(word)}</b> is mainly used as a "
-            f"<b>{html.escape(pos)}</b> meaning "
-            f"“{html.escape(definition)}”."
+            f"<b>{html.escape(first['pos'] or 'word')}</b> meaning "
+            f"“{html.escape(first['definition'])}”."
         )
 
-        if len(meanings) > 1:
-            second = meanings[1]
-
-            if (
-                second["definition"]
-                and second["definition"]
-                != definition
-            ):
-                paragraph += (
-                    f" It can also mean "
-                    f"“{html.escape(second['definition'])}”."
-                )
-
-        example = first.get(
-            "example",
-            "",
-        )
-
-        if example:
-            paragraph += (
-                f"\nFor example: "
-                f"“{html.escape(example)}”"
+        if (
+            len(meanings) > 1
+            and meanings[1]["definition"]
+            != first["definition"]
+        ):
+            text += (
+                "\nIt can also mean "
+                f"“{html.escape(meanings[1]['definition'])}”."
             )
 
         arabic = await _arabic_meaning(
@@ -969,1091 +707,813 @@ async def _build_main_analysis(
         )
 
         if arabic:
-            paragraph += (
-                f"\n🇩🇿 <b>{html.escape(arabic)}</b>"
+            text += (
+                f"\n\n🇩🇿 "
+                f"<b>{html.escape(arabic)}</b>"
             )
 
         return (
             "🔎 <b>Word Analysis</b>\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
-            + paragraph
+            + text
         )
 
-    # --------------------------------------------------------
-    # Dictionary failed.
-    # Use Groq as fallback.
-    # --------------------------------------------------------
-
-    result = await _groq_text(
+    result = await _groq(
         f"""
 Analyze the English word "{word}" for an English learner.
 
-Give a concise natural analysis of about 4–6 short lines.
+Give:
+1. Main part of speech
+2. Main meaning
+3. Another important meaning if relevant
+4. Concise Arabic meaning
 
-Include:
-- the most common part of speech
-- the main common meaning
-- another common meaning or use if relevant
-- a concise Arabic meaning
-
-Use ordinary, well-established English knowledge.
-Do not invent obscure meanings or facts.
-Do not use Markdown.
+Use established knowledge only.
+Do not invent facts.
+Keep it short.
 """,
-        max_tokens=250,
+        250,
     )
 
     if result:
         return (
             "🔎 <b>Word Analysis</b>\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
-            f"{html.escape(result)}"
+            + html.escape(result)
         )
-
-    # --------------------------------------------------------
-    # Absolute fallback.
-    # The buttons MUST still appear.
-    # --------------------------------------------------------
 
     return (
         "🔎 <b>Word Analysis</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔤 <b>{html.escape(word)}</b>\n"
-        "ℹ️ The main definition could not be loaded right now.\n"
-        "You can still use the sections below."
+        f"🔤 <b>{html.escape(word)}</b>\n\n"
+        "ℹ️ The main definition could not be loaded right now."
     )
 
 
 # ============================================================
-# LINKS
+# EXTERNAL LINKS
 # ============================================================
 
-def _dictionary_links(word):
+def _external_urls(word):
     safe = quote(
         word.strip(),
         safe="",
     )
 
-    cambridge = (
-        "https://dictionary.cambridge.org/"
-        f"dictionary/english/{safe}"
-    )
+    return {
+        "cambridge":
+            f"https://dictionary.cambridge.org/dictionary/english/{safe}",
 
-    oxford = (
-        "https://www.oxfordlearnersdictionaries.com/"
-        f"definition/english/{safe}"
-    )
+        "oxford":
+            f"https://www.oxfordlearnersdictionaries.com/definition/english/{safe}",
 
-    youglish = (
-        "https://youglish.com/pronounce/"
-        f"{safe}/english"
-    )
-
-    return (
-        cambridge,
-        oxford,
-        youglish,
-    )
+        "youglish":
+            f"https://youglish.com/pronounce/{safe}/english",
+    }
 
 
-def _links_html(word):
-    cambridge, oxford, youglish = (
-        _dictionary_links(word)
-    )
+def _external_buttons(word):
+    urls = _external_urls(word)
 
-    return (
-        "\n\n"
-        "🔗 <b>Useful Links</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f'<a href="{html.escape(cambridge, quote=True)}">📘 Cambridge</a>'
-        "   •   "
-        f'<a href="{html.escape(oxford, quote=True)}">📕 Oxford</a>\n'
-        f'<a href="{html.escape(youglish, quote=True)}">🗣️ YouGlish</a>'
+    return [
+        InlineKeyboardButton(
+            "📘 Cambridge",
+            url=urls["cambridge"],
+        ),
+        InlineKeyboardButton(
+            "📕 Oxford",
+            url=urls["oxford"],
+        ),
+        InlineKeyboardButton(
+            "🗣️ YouGlish",
+            url=urls["youglish"],
+        ),
+    ]
+
+
+# ============================================================
+# BUTTON HELPERS
+# ============================================================
+
+def _btn(
+    text,
+    session_id,
+    action,
+):
+    return InlineKeyboardButton(
+        text,
+        callback_data=(
+            f"wa:{session_id}:{action}"
+        ),
     )
 
 
 # ============================================================
-# MAIN KEYBOARD
+# MAIN 6 BUTTONS
 # ============================================================
 
 def _main_keyboard(
     session_id,
+    word,
 ):
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "📖 Meaning & Usage",
-                    callback_data=(
-                        f"wa:{session_id}:meaning"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "🔗 Word Relations",
-                    callback_data=(
-                        f"wa:{session_id}:relations"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔬 Deep Analysis",
-                    callback_data=(
-                        f"wa:{session_id}:deep"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "🔊 Pronunciation",
-                    callback_data=(
-                        f"wa:{session_id}:pron"
-                    ),
-                ),
-            ],
-        ]
-    )
+            _btn(
+                "📖 Meaning & Usage",
+                session_id,
+                "meaning",
+            ),
+            _btn(
+                "🔗 Word Relations",
+                session_id,
+                "relations",
+            ),
+        ],
+        [
+            _btn(
+                "🔬 Deep Analysis",
+                session_id,
+                "deep",
+            ),
+            _btn(
+                "💬 Expressions & Idioms",
+                session_id,
+                "expressions",
+            ),
+        ],
+        [
+            _btn(
+                "🗣️ Slang & Phrasal Verbs",
+                session_id,
+                "slang",
+            ),
+            _btn(
+                "🔊 Pronunciation",
+                session_id,
+                "pron",
+            ),
+        ],
+        _external_buttons(word),
+    ])
 
 
 # ============================================================
-# SECTION MENUS
+# MEANING & USAGE
 # ============================================================
 
 def _meaning_keyboard(session_id):
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "📖 Meanings",
-                    callback_data=(
-                        f"wa:{session_id}:meanings"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "📝 Examples",
-                    callback_data=(
-                        f"wa:{session_id}:examples"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔗 Collocations",
-                    callback_data=(
-                        f"wa:{session_id}:collocations"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Back",
-                    callback_data=(
-                        f"wa:{session_id}:back"
-                    ),
-                ),
-            ],
-        ]
-    )
+            _btn(
+                "📌 Meanings",
+                session_id,
+                "meanings",
+            ),
+            _btn(
+                "✏️ Examples",
+                session_id,
+                "examples",
+            ),
+        ],
+        [
+            _btn(
+                "🔗 Collocations",
+                session_id,
+                "collocations",
+            ),
+            _btn(
+                "📝 Grammar Patterns",
+                session_id,
+                "grammar",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
+
+# ============================================================
+# WORD RELATIONS
+# ============================================================
 
 def _relations_keyboard(session_id):
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "🔄 Synonyms",
-                    callback_data=(
-                        f"wa:{session_id}:syn"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "🔻 Antonyms",
-                    callback_data=(
-                        f"wa:{session_id}:ant"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🟰 Homophones",
-                    callback_data=(
-                        f"wa:{session_id}:homo"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "✍️ Similar Spelling",
-                    callback_data=(
-                        f"wa:{session_id}:similar"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🧩 Word Family",
-                    callback_data=(
-                        f"wa:{session_id}:family"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "🌱 Root",
-                    callback_data=(
-                        f"wa:{session_id}:root"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Back",
-                    callback_data=(
-                        f"wa:{session_id}:back"
-                    ),
-                ),
-            ],
-        ]
-    )
+            _btn(
+                "🔄 Synonyms",
+                session_id,
+                "syn",
+            ),
+            _btn(
+                "🔻 Antonyms",
+                session_id,
+                "ant",
+            ),
+        ],
+        [
+            _btn(
+                "🟰 Homophones",
+                session_id,
+                "homo",
+            ),
+            _btn(
+                "✍️ Similar Spelling",
+                session_id,
+                "similar",
+            ),
+        ],
+        [
+            _btn(
+                "🧩 Word Family",
+                session_id,
+                "family",
+            ),
+            _btn(
+                "📊 Word Levels",
+                session_id,
+                "levels",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
+
+# ============================================================
+# DEEP ANALYSIS
+# ============================================================
 
 def _deep_keyboard(session_id):
-    return InlineKeyboardMarkup(
+    return InlineKeyboardMarkup([
         [
-            [
-                InlineKeyboardButton(
-                    "📚 Etymology",
-                    callback_data=(
-                        f"wa:{session_id}:etymology"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "📊 CEFR Level",
-                    callback_data=(
-                        f"wa:{session_id}:cefr"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⚖️ Usage & Register",
-                    callback_data=(
-                        f"wa:{session_id}:usage"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    "🧠 Grammar Patterns",
-                    callback_data=(
-                        f"wa:{session_id}:grammar"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Back",
-                    callback_data=(
-                        f"wa:{session_id}:back"
-                    ),
-                ),
-            ],
-        ]
-    )
-
-
-def _pron_keyboard(
-    session_id,
-    word,
-):
-    youglish = _dictionary_links(
-        word
-    )[2]
-
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "🔊 Full Pronunciation",
-                    callback_data=(
-                        f"wa:{session_id}:pron_result"
-                    ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "⬅️ Back",
-                    callback_data=(
-                        f"wa:{session_id}:back"
-                    ),
-                ),
-            ],
-        ]
-    )
-
-
-# ============================================================
-# MENU TEXTS
-# ============================================================
-
-def _menu_text(
-    title,
-    word,
-):
-    return (
-        f"🔎 <b>{title}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"Choose what you want to know about "
-        f"<b>{html.escape(word)}</b>:"
-    )
-
-
-# ============================================================
-# RESULT: MEANINGS
-# ============================================================
-
-async def _send_meanings(
-    message,
-    word,
-    dictionary,
-):
-    meanings = _get_meanings(
-        dictionary
-    )
-
-    if not meanings:
-        await message.reply_text(
-            "ℹ️ No reliable meaning data available."
-        )
-        return
-
-    lines = [
-        f"📖 <b>Meanings — {html.escape(word)}</b>",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-
-    for i, item in enumerate(
-        meanings[:8],
-        1,
-    ):
-        pos = item["pos"] or "word"
-
-        lines.append(
-            f"\n<b>{i}. {html.escape(pos)}</b>\n"
-            f"{html.escape(item['definition'])}"
-        )
-
-    lines.append(
-        "\n\n📚 Source: Dictionary API"
-    )
-
-    await message.reply_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: EXAMPLES
-# ============================================================
-
-async def _send_examples(
-    message,
-    word,
-    dictionary,
-):
-    meanings = _get_meanings(
-        dictionary
-    )
-
-    examples = []
-
-    for item in meanings:
-        if item.get("example"):
-            examples.append(
-                (
-                    item.get(
-                        "pos",
-                        "word",
-                    ),
-                    item["example"],
-                )
-            )
-
-    if not examples:
-        await message.reply_text(
-            "ℹ️ No reliable example sentences available."
-        )
-        return
-
-    lines = [
-        f"📝 <b>Examples — {html.escape(word)}</b>",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-
-    for pos, example in examples[:6]:
-        lines.append(
-            f"\n<b>{html.escape(pos)}</b>\n"
-            f"“{html.escape(example)}”"
-        )
-
-    lines.append(
-        "\n\n📚 Source: Dictionary API"
-    )
-
-    await message.reply_text(
-        "\n".join(lines),
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: SYNONYMS
-# ============================================================
-
-async def _send_synonyms(
-    message,
-    word,
-    data,
-):
-    items = _get_synonyms(data)
-
-    if not items:
-        await message.reply_text(
-            "ℹ️ No reliable synonyms available."
-        )
-        return
-
-    text = (
-        f"🔄 <b>Synonyms — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in items
-        )
-        + "\n\n📚 Sources: WordNet / Datamuse"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: ANTONYMS
-# ============================================================
-
-async def _send_antonyms(
-    message,
-    word,
-    data,
-):
-    items = _get_antonyms(data)
-
-    if not items:
-        await message.reply_text(
-            "ℹ️ No reliable antonyms available."
-        )
-        return
-
-    text = (
-        f"🔻 <b>Antonyms — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in items
-        )
-        + "\n\n📚 Sources: WordNet / Datamuse"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: SIMILAR SPELLING
-# ============================================================
-
-async def _send_similar(
-    message,
-    word,
-    items,
-):
-    filtered = []
-
-    for item in items:
-        candidate = item.get(
-            "word",
-            "",
-        ).strip()
-
-        if (
-            not candidate
-            or candidate.lower()
-            == word.lower()
-        ):
-            continue
-
-        if len(candidate) > max(
-            20,
-            len(word) + 8,
-        ):
-            continue
-
-        filtered.append(candidate)
-
-    filtered = _unique(
-        filtered,
-        12,
-    )
-
-    if not filtered:
-        await message.reply_text(
-            "ℹ️ No reliable similar-spelling words available."
-        )
-        return
-
-    text = (
-        f"✍️ <b>Similar Spelling — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in filtered
-        )
-        + "\n\n📚 Source: Datamuse"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: HOMOPHONES
-# ============================================================
-
-async def _send_homophones(
-    message,
-    word,
-    data,
-):
-    dictionary = data.get(
-        "dictionary"
-    )
-
-    candidates = data.get(
-        "sound_alikes",
-        [],
-    )
-
-    if not dictionary:
-        await message.reply_text(
-            "ℹ️ No reliable homophones available."
-        )
-        return
-
-    source_prons = set()
-
-    for p in dictionary.get(
-        "phonetics",
-        [],
-    ):
-        text = p.get(
-            "text",
-            "",
-        )
-
-        if text:
-            cleaned = re.sub(
-                r"[^a-zA-Zəɪʊʌɔɑæɛɒːʃʒθðŋtʃdʒˈˌ]",
-                "",
-                text,
-            ).lower()
-
-            source_prons.add(
-                cleaned
-            )
-
-    homophones = []
-
-    for item in candidates:
-        candidate = item.get(
-            "word",
-            "",
-        ).strip()
-
-        tags = item.get(
-            "tags",
-            [],
-        )
-
-        if (
-            not candidate
-            or candidate.lower()
-            == word.lower()
-        ):
-            continue
-
-        pron_values = []
-
-        for tag in tags:
-            if tag.startswith(
-                "pron:"
-            ):
-                pron_values.append(
-                    tag[5:]
-                )
-
-        for p in pron_values:
-            clean = re.sub(
-                r"[^a-zA-Zəɪʊʌɔɑæɛɒːʃʒθðŋtʃdʒˈˌ]",
-                "",
-                p,
-            ).lower()
-
-            if (
-                clean
-                and clean in source_prons
-            ):
-                homophones.append(
-                    candidate
-                )
-                break
-
-    homophones = _unique(
-        homophones,
-        10,
-    )
-
-    if not homophones:
-        await message.reply_text(
-            "ℹ️ No reliable homophones available."
-        )
-        return
-
-    text = (
-        f"🟰 <b>Homophones — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in homophones
-        )
-        + "\n\n📚 Source: pronunciation data"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: WORD FAMILY
-# ============================================================
-
-async def _send_family(
-    message,
-    word,
-    data,
-):
-    items = _get_word_family(
-        data
-    )
-
-    if not items:
-        await message.reply_text(
-            "ℹ️ No reliable word-family data available."
-        )
-        return
-
-    text = (
-        f"🧩 <b>Word Family — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in items
-        )
-        + "\n\n📚 Source: WordNet"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: ROOT
-# ============================================================
-
-async def _send_root(
-    message,
-    word,
-    etymology,
-):
-    if not etymology:
-        await message.reply_text(
-            "ℹ️ No reliable root data available."
-        )
-        return
-
-    text = (
-        f"🌱 <b>Root / Etymology — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{html.escape(etymology)}\n\n"
-        "📚 Source: Wiktionary"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: ETYMOLOGY
-# ============================================================
-
-async def _send_etymology(
-    message,
-    word,
-    etymology,
-):
-    if not etymology:
-        await message.reply_text(
-            "ℹ️ No reliable etymology available."
-        )
-        return
-
-    text = (
-        f"📚 <b>Etymology — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{html.escape(etymology)}\n\n"
-        "📚 Source: Wiktionary"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: COLLOCATIONS
-# ============================================================
-
-async def _send_collocations(
-    message,
-    word,
-    related,
-):
-    if not related:
-        await message.reply_text(
-            "ℹ️ No reliable collocation data available."
-        )
-        return
-
-    items = _unique(
-        [
-            item["word"]
-            for item in related
+            _btn(
+                "🌱 Root",
+                session_id,
+                "root",
+            ),
+            _btn(
+                "📜 Etymology",
+                session_id,
+                "etymology",
+            ),
         ],
-        10,
-    )
-
-    if not items:
-        await message.reply_text(
-            "ℹ️ No reliable collocation data available."
-        )
-        return
-
-    text = (
-        f"🔗 <b>Commonly Related Words — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        + ", ".join(
-            html.escape(x)
-            for x in items
-        )
-        + "\n\n📚 Source: Datamuse"
-    )
-
-    await message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-    )
-
-
-# ============================================================
-# RESULT: USAGE & REGISTER
-# ============================================================
-
-async def _send_usage(
-    message,
-    word,
-    dictionary,
-):
-    meanings = _get_meanings(
-        dictionary
-    )
-
-    if not meanings:
-        await message.reply_text(
-            "ℹ️ No reliable usage data available."
-        )
-        return
-
-    source = "\n".join(
-        f"- {m['pos']}: {m['definition']}"
-        for m in meanings[:5]
-    )
-
-    result = await _groq_text(
-        f"""
-Explain the common usage of the English word "{word}"
-using ONLY these dictionary meanings:
-
-{source}
-
-Give a short learner-friendly explanation.
-Do not invent meanings or facts.
-Mention register only if it can be safely inferred
-from the supplied data.
-""",
-        max_tokens=250,
-    )
-
-    if not result:
-        result = (
-            "ℹ️ No additional reliable usage information available."
-        )
-
-    await message.reply_text(
-        f"⚖️ <b>Usage & Register — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{html.escape(result)}",
-        parse_mode=ParseMode.HTML,
-    )
+        [
+            _btn(
+                "⚠️ Register & Tone",
+                session_id,
+                "register",
+            ),
+            _btn(
+                "🔤 Word Forms",
+                session_id,
+                "forms",
+            ),
+        ],
+        [
+            _btn(
+                "📊 Word Frequency",
+                session_id,
+                "frequency",
+            ),
+            _btn(
+                "🧠 Usage Notes",
+                session_id,
+                "usage_notes",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
 
 # ============================================================
-# RESULT: GRAMMAR PATTERNS
+# EXPRESSIONS & IDIOMS
 # ============================================================
 
-async def _send_grammar(
-    message,
-    word,
-    dictionary,
-):
-    meanings = _get_meanings(
-        dictionary
-    )
-
-    if not meanings:
-        await message.reply_text(
-            "ℹ️ No reliable grammar data available."
-        )
-        return
-
-    source = "\n".join(
-        f"- {m['pos']}: {m['definition']}"
-        for m in meanings[:5]
-    )
-
-    examples = "\n".join(
-        f"- {m['example']}"
-        for m in meanings
-        if m.get("example")
-    )
-
-    result = await _groq_text(
-        f"""
-For the English word "{word}", explain only the common
-grammar patterns that are directly supported by the supplied
-dictionary definitions/examples.
-
-Definitions:
-{source}
-
-Examples:
-{examples}
-
-Be concise.
-Do not invent uncommon grammar patterns.
-""",
-        max_tokens=300,
-    )
-
-    if not result:
-        result = (
-            "ℹ️ No additional reliable grammar information available."
-        )
-
-    await message.reply_text(
-        f"🧠 <b>Grammar Patterns — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"{html.escape(result)}",
-        parse_mode=ParseMode.HTML,
-    )
+def _expressions_keyboard(session_id):
+    return InlineKeyboardMarkup([
+        [
+            _btn(
+                "💬 Idioms",
+                session_id,
+                "idioms",
+            ),
+            _btn(
+                "📜 Proverbs & Sayings",
+                session_id,
+                "proverbs",
+            ),
+        ],
+        [
+            _btn(
+                "🧠 Common Expressions",
+                session_id,
+                "expressions_common",
+            ),
+            _btn(
+                "🤝 Fixed Phrases",
+                session_id,
+                "fixed",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
 
 # ============================================================
-# RESULT: CEFR
+# SLANG & PHRASAL VERBS
 # ============================================================
 
-async def _send_cefr(
-    message,
-    word,
-):
-    await message.reply_text(
-        f"📊 <b>CEFR Level — {html.escape(word)}</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "ℹ️ No reliable CEFR data available.",
-        parse_mode=ParseMode.HTML,
-    )
+def _slang_keyboard(session_id):
+    return InlineKeyboardMarkup([
+        [
+            _btn(
+                "🗣️ Slang",
+                session_id,
+                "slang_result",
+            ),
+            _btn(
+                "🔀 Phrasal Verbs",
+                session_id,
+                "phrasal",
+            ),
+        ],
+        [
+            _btn(
+                "🌎 US / UK Usage",
+                session_id,
+                "usuk",
+            ),
+            _btn(
+                "⚠️ Informal Uses",
+                session_id,
+                "informal",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
 
 # ============================================================
 # PRONUNCIATION
 # ============================================================
 
-def _phonetic_values(
-    dictionary,
-):
-    values = []
+def _pron_keyboard(session_id):
+    return InlineKeyboardMarkup([
+        [
+            _btn(
+                "🇺🇸 American",
+                session_id,
+                "american",
+            ),
+            _btn(
+                "🇬🇧 British",
+                session_id,
+                "british",
+            ),
+        ],
+        [
+            _btn(
+                "🔤 IPA & Stress",
+                session_id,
+                "ipa",
+            ),
+            _btn(
+                "🗣️ YouGlish",
+                session_id,
+                "youglish",
+            ),
+        ],
+        [
+            _btn(
+                "⬅️ Back",
+                session_id,
+                "back",
+            )
+        ],
+    ])
 
-    if not dictionary:
-        return values
 
-    for item in dictionary.get(
-        "phonetics",
-        [],
-    ):
-        text = item.get(
-            "text",
-            "",
-        ).strip()
+# ============================================================
+# MENU TEXT
+# ============================================================
 
-        if (
-            text
-            and text not in values
-        ):
-            values.append(text)
-
-    return values
-
-
-def _format_pronunciation(
+def _menu(
+    title,
     word,
-    dictionary,
 ):
-    phonetics = _phonetic_values(
-        dictionary
-    )
-
-    if phonetics:
-        ipa = " / ".join(
-            phonetics[:4]
-        )
-    else:
-        ipa = (
-            "Not available from current "
-            "dictionary data."
-        )
-
     return (
-        f"🔊 <b>Pronunciation — {html.escape(word)}</b>\n"
+        f"🔎 <b>{title}</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔤 <b>IPA:</b> {html.escape(ipa)}\n"
-        "🇺🇸 <b>American:</b> "
-        "Dialect-specific data not available.\n"
-        "🇬🇧 <b>British:</b> "
-        "Dialect-specific data not available.\n"
-        "🔤 <b>Syllables:</b> "
-        "Not available from current source.\n"
-        "📌 <b>Stress:</b> "
-        "Not available from current source.\n"
-        "🔇 <b>Silent letters:</b> "
-        "Not reliably available."
+        f"Choose what you want to know about "
+        f"<b>{html.escape(word)}</b>:"
     )
 
 
-async def _send_pronunciation(
+# ============================================================
+# RESULT HELPERS
+# ============================================================
+
+async def _send_section(
     message,
-    word,
-    dictionary,
+    title,
+    body,
+    source=None,
 ):
-    if not dictionary:
-        await message.reply_text(
-            "ℹ️ No reliable pronunciation data available."
-        )
-        return
-
-    youglish = _dictionary_links(
-        word
-    )[2]
-
     text = (
-        _format_pronunciation(
-            word,
-            dictionary,
-        )
-        + "\n\n"
-        f'<a href="{html.escape(youglish, quote=True)}">'
-        "🗣️ Open YouGlish"
-        "</a>"
+        f"{title}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        f"{body}"
     )
+
+    if source:
+        text += (
+            f"\n\n📚 Source: {source}"
+        )
 
     await message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
     )
 
-    audio_path = None
 
-    try:
-        import edge_tts
-
-        with tempfile.NamedTemporaryFile(
-            suffix=".mp3",
-            delete=False,
-        ) as tmp:
-            audio_path = tmp.name
-
-        communicate = edge_tts.Communicate(
-            word,
-            voice="en-US-AriaNeural",
-        )
-
-        await asyncio.wait_for(
-            communicate.save(
-                audio_path
-            ),
-            timeout=30,
-        )
-
-        with open(
-            audio_path,
-            "rb",
-        ) as audio_file:
-            await message.reply_voice(
-                voice=audio_file,
-                caption=f"🇺🇸 {word}",
-            )
-
-    except Exception:
-        pass
-
-    finally:
-        try:
-            if audio_path:
-                Path(
-                    audio_path
-                ).unlink(
-                    missing_ok=True
-                )
-        except Exception:
-            pass
+async def _send_unavailable(message):
+    await message.reply_text(
+        "ℹ️ No reliable information available "
+        "for this section."
+    )
 
 
 # ============================================================
-# ANALYSIS COMMAND
+# MEANINGS
+# ============================================================
+
+async def _result_meanings(
+    message,
+    word,
+    dictionary,
+):
+    items = _meanings(dictionary)
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    lines = []
+
+    for index, item in enumerate(
+        items[:8],
+        1,
+    ):
+        lines.append(
+            f"<b>{index}. "
+            f"{html.escape(item['pos'] or 'word')}</b>\n"
+            f"{html.escape(item['definition'])}"
+        )
+
+    await _send_section(
+        message,
+        f"📌 <b>Meanings — "
+        f"{html.escape(word)}</b>",
+        "\n\n".join(lines),
+        "Dictionary API",
+    )
+
+
+# ============================================================
+# EXAMPLES
+# ============================================================
+
+async def _result_examples(
+    message,
+    word,
+    dictionary,
+):
+    items = [
+        x
+        for x in _meanings(dictionary)
+        if x["example"]
+    ]
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    body = "\n\n".join(
+        f"<b>{html.escape(x['pos'] or 'word')}</b>\n"
+        f"“{html.escape(x['example'])}”"
+        for x in items[:8]
+    )
+
+    await _send_section(
+        message,
+        f"✏️ <b>Examples — "
+        f"{html.escape(word)}</b>",
+        body,
+        "Dictionary API",
+    )
+
+
+# ============================================================
+# SYNONYMS
+# ============================================================
+
+async def _result_synonyms(
+    message,
+    word,
+    data,
+):
+    items = _synonyms(data)
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    body = "\n".join(
+        f"• {html.escape(item)}"
+        for item in items
+    )
+
+    await _send_section(
+        message,
+        f"🔄 <b>Synonyms — "
+        f"{html.escape(word)}</b>",
+        body,
+        "WordNet / Datamuse",
+    )
+
+
+# ============================================================
+# ANTONYMS
+# ============================================================
+
+async def _result_antonyms(
+    message,
+    word,
+    data,
+):
+    items = _antonyms(data)
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    body = "\n".join(
+        f"• {html.escape(item)}"
+        for item in items
+    )
+
+    await _send_section(
+        message,
+        f"🔻 <b>Antonyms — "
+        f"{html.escape(word)}</b>",
+        body,
+        "WordNet / Datamuse",
+    )
+
+
+# ============================================================
+# SIMILAR SPELLING
+# ============================================================
+
+async def _result_similar(
+    message,
+    word,
+    data,
+):
+    items = []
+
+    if data and data[0]:
+        for item in data[0]:
+            candidate = item.get(
+                "word",
+                "",
+            )
+
+            if not candidate:
+                continue
+
+            if candidate.lower() == word.lower():
+                continue
+
+            if len(candidate) <= max(
+                20,
+                len(word) + 8,
+            ):
+                items.append(candidate)
+
+    items = _unique(
+        items,
+        12,
+    )
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    await _send_section(
+        message,
+        f"✍️ <b>Similar Spelling — "
+        f"{html.escape(word)}</b>",
+        "\n".join(
+            f"• {html.escape(x)}"
+            for x in items
+        ),
+        "Datamuse",
+    )
+
+
+# ============================================================
+# HOMOPHONES
+# ============================================================
+
+async def _result_homophones(
+    message,
+    word,
+    data,
+):
+    if not data:
+        await _send_unavailable(message)
+        return
+
+    dictionary, candidates = data
+
+    if not dictionary:
+        await _send_unavailable(message)
+        return
+
+    source_pronunciations = set()
+
+    for phonetic in dictionary.get(
+        "phonetics",
+        [],
+    ):
+        value = phonetic.get(
+            "text",
+            "",
+        )
+
+        if value:
+            source_pronunciations.add(
+                value.lower().strip()
+            )
+
+    found = []
+
+    for item in candidates or []:
+        candidate = item.get(
+            "word",
+            "",
+        )
+
+        if not candidate:
+            continue
+
+        if candidate.lower() == word.lower():
+            continue
+
+        for tag in item.get(
+            "tags",
+            [],
+        ):
+            if not tag.startswith(
+                "pron:"
+            ):
+                continue
+
+            pronunciation = tag[5:].lower().strip()
+
+            if pronunciation in source_pronunciations:
+                found.append(candidate)
+                break
+
+    found = _unique(
+        found,
+        10,
+    )
+
+    if not found:
+        await _send_unavailable(message)
+        return
+
+    await _send_section(
+        message,
+        f"🟰 <b>Homophones — "
+        f"{html.escape(word)}</b>",
+        "\n".join(
+            f"• {html.escape(x)}"
+            for x in found
+        ),
+        "Datamuse",
+    )
+
+
+# ============================================================
+# WORD FAMILY
+# ============================================================
+
+async def _result_family(
+    message,
+    word,
+    data,
+):
+    items = _family(data)
+
+    if not items:
+        await _send_unavailable(message)
+        return
+
+    await _send_section(
+        message,
+        f"🧩 <b>Word Family — "
+        f"{html.escape(word)}</b>",
+        "\n".join(
+            f"• {html.escape(x)}"
+            for x in items
+        ),
+        "WordNet",
+    )
+
+
+# ============================================================
+# GROQ SECTION
+# ============================================================
+
+async def _groq_section(
+    message,
+    word,
+    title,
+    instruction,
+    dictionary=None,
+    max_tokens=350,
+):
+    source = ""
+
+    if dictionary:
+        source = "\n".join(
+            f"- {x['pos']}: {x['definition']}"
+            for x in _meanings(dictionary)[:8]
+        )
+
+    prompt = f"""
+Word: {word}
+
+Dictionary information:
+{source}
+
+Task:
+{instruction}
+
+Use reliable and established English knowledge.
+Do not invent information.
+If there is no reliable information, say so.
+"""
+
+    result = await _groq(
+        prompt,
+        max_tokens,
+    )
+
+    if not result:
+        await _send_unavailable(message)
+        return
+
+    await _send_section(
+        message,
+        title,
+        html.escape(result),
+    )
+
+
+# ============================================================
+# COMMAND
 # ============================================================
 
 async def analysis_command(
@@ -2061,13 +1521,9 @@ async def analysis_command(
     context,
 ):
     message = update.effective_message
-
-    if not message:
-        return
-
     user = update.effective_user
 
-    if not user:
+    if not message or not user:
         return
 
     if not await _call_approved(
@@ -2079,15 +1535,6 @@ async def analysis_command(
         return
 
     try:
-
-        # ----------------------------------------------------
-        # GET TARGET
-        #
-        # Command arguments have priority.
-        # This prevents /analysis hate from becoming empty
-        # because another helper returns an empty target.
-        # ----------------------------------------------------
-
         target = ""
 
         if context and context.args:
@@ -2095,7 +1542,6 @@ async def analysis_command(
                 context.args
             )
 
-        # Reply-to-message.
         if (
             not target
             and message.reply_to_message
@@ -2106,7 +1552,6 @@ async def analysis_command(
                 or ""
             )
 
-        # Other trigger systems such as "تحليل".
         if (
             not target
             and _get_target_text
@@ -2116,17 +1561,13 @@ async def analysis_command(
                     message
                 )
 
-                if inspect.isawaitable(
-                    target
-                ):
+                if inspect.isawaitable(target):
                     target = await target
 
             except Exception:
                 target = ""
 
-        word = extract_word(
-            target
-        )
+        word = extract_word(target)
 
         if not word:
             await message.reply_text(
@@ -2135,10 +1576,8 @@ async def analysis_command(
             )
             return
 
-        # ----------------------------------------------------
-        # CREATE SESSION FIRST
-        # ----------------------------------------------------
-
+        # New analysis invalidates the previous
+        # analysis of the same user.
         session_id = _create_session(
             user.id,
             word,
@@ -2153,43 +1592,29 @@ async def analysis_command(
         if not session:
             return
 
-        # ----------------------------------------------------
-        # MAIN ANALYSIS
-        # ----------------------------------------------------
-
-        dictionary = None
-
-        try:
-            dictionary = await _dictionary_data(
-                word
-            )
-        except Exception:
-            dictionary = None
+        # Only the main information is loaded now.
+        # Other sections load only when their button
+        # is pressed.
+        dictionary = await _dictionary_data(
+            word
+        )
 
         if dictionary:
-            session["data"][
-                "dictionary"
-            ] = dictionary
+            session["data"]["dictionary"] = (
+                dictionary
+            )
 
         main_text = await _build_main_analysis(
             word,
             dictionary,
         )
 
-        # Links are INSIDE the same message.
-        main_text += _links_html(
-            word
-        )
-
-        # ----------------------------------------------------
-        # ALWAYS SHOW MAIN MESSAGE + BUTTONS
-        # ----------------------------------------------------
-
         await message.reply_text(
             main_text,
             parse_mode=ParseMode.HTML,
             reply_markup=_main_keyboard(
                 session_id,
+                word,
             ),
             disable_web_page_preview=True,
         )
@@ -2197,15 +1622,15 @@ async def analysis_command(
     except Exception:
         try:
             await message.reply_text(
-                "⚠️ Something went wrong while preparing "
-                "the analysis."
+                "⚠️ Something went wrong "
+                "while preparing the analysis."
             )
         except Exception:
             pass
 
 
 # ============================================================
-# CALLBACK HANDLER
+# CALLBACK
 # ============================================================
 
 async def analysis_callback(
@@ -2213,13 +1638,9 @@ async def analysis_callback(
     context,
 ):
     query = update.callback_query
-
-    if not query:
-        return
-
     user = update.effective_user
 
-    if not user:
+    if not query or not user:
         return
 
     try:
@@ -2227,9 +1648,9 @@ async def analysis_callback(
     except Exception:
         pass
 
-    data = query.data or ""
-
-    parts = data.split(
+    parts = (
+        query.data or ""
+    ).split(
         ":",
         2,
     )
@@ -2243,10 +1664,9 @@ async def analysis_callback(
     session_id = parts[1]
     action = parts[2]
 
-    # --------------------------------------------------------
-    # USER + SESSION CHECK
-    # --------------------------------------------------------
-
+    # IMPORTANT:
+    # The callback is validated against
+    # the CURRENT session of THIS USER.
     session = _get_valid_session(
         user.id,
         session_id,
@@ -2263,12 +1683,12 @@ async def analysis_callback(
     try:
 
         # ====================================================
-        # MAIN SECTION MENUS
+        # MAIN SIX SECTIONS
         # ====================================================
 
         if action == "meaning":
             await query.message.reply_text(
-                _menu_text(
+                _menu(
                     "Meaning & Usage",
                     word,
                 ),
@@ -2281,7 +1701,7 @@ async def analysis_callback(
 
         if action == "relations":
             await query.message.reply_text(
-                _menu_text(
+                _menu(
                     "Word Relations",
                     word,
                 ),
@@ -2294,7 +1714,7 @@ async def analysis_callback(
 
         if action == "deep":
             await query.message.reply_text(
-                _menu_text(
+                _menu(
                     "Deep Analysis",
                     word,
                 ),
@@ -2305,16 +1725,41 @@ async def analysis_callback(
             )
             return
 
+        if action == "expressions":
+            await query.message.reply_text(
+                _menu(
+                    "Expressions & Idioms",
+                    word,
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_expressions_keyboard(
+                    session_id
+                ),
+            )
+            return
+
+        if action == "slang":
+            await query.message.reply_text(
+                _menu(
+                    "Slang & Phrasal Verbs",
+                    word,
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_slang_keyboard(
+                    session_id
+                ),
+            )
+            return
+
         if action == "pron":
             await query.message.reply_text(
-                _menu_text(
+                _menu(
                     "Pronunciation",
                     word,
                 ),
                 parse_mode=ParseMode.HTML,
                 reply_markup=_pron_keyboard(
-                    session_id,
-                    word,
+                    session_id
                 ),
             )
             return
@@ -2324,37 +1769,58 @@ async def analysis_callback(
         # ====================================================
 
         if action == "back":
-            main_text = (
-                _menu_text(
+            await query.message.reply_text(
+                _menu(
                     "Word Analysis",
                     word,
-                )
-                + _links_html(word)
-            )
-
-            await query.message.reply_text(
-                main_text,
+                ),
                 parse_mode=ParseMode.HTML,
                 reply_markup=_main_keyboard(
                     session_id,
+                    word,
                 ),
                 disable_web_page_preview=True,
             )
             return
 
         # ====================================================
+        # DICTIONARY
+        # ====================================================
+
+        dictionary = None
+
+        if action in {
+            "meanings",
+            "examples",
+            "grammar",
+            "collocations",
+            "register",
+            "forms",
+            "frequency",
+            "usage_notes",
+            "levels",
+            "idioms",
+            "proverbs",
+            "expressions_common",
+            "fixed",
+            "slang_result",
+            "phrasal",
+            "usuk",
+            "informal",
+            "american",
+            "british",
+            "ipa",
+        }:
+            dictionary = await _get_dictionary(
+                session
+            )
+
+        # ====================================================
         # MEANING & USAGE
         # ====================================================
 
         if action == "meanings":
-
-            dictionary = (
-                await _get_dictionary_for_session(
-                    session
-                )
-            )
-
-            await _send_meanings(
+            await _result_meanings(
                 query.message,
                 word,
                 dictionary,
@@ -2362,14 +1828,7 @@ async def analysis_callback(
             return
 
         if action == "examples":
-
-            dictionary = (
-                await _get_dictionary_for_session(
-                    session
-                )
-            )
-
-            await _send_examples(
+            await _result_examples(
                 query.message,
                 word,
                 dictionary,
@@ -2377,17 +1836,35 @@ async def analysis_callback(
             return
 
         if action == "collocations":
-
-            related = (
-                await _get_collocation_data(
-                    session
-                )
-            )
-
-            await _send_collocations(
+            await _groq_section(
                 query.message,
                 word,
-                related,
+                f"🔗 <b>Collocations — "
+                f"{html.escape(word)}</b>",
+                (
+                    "List common natural collocations "
+                    "with this word. Give only established "
+                    "combinations. Include short meanings "
+                    "where useful."
+                ),
+                dictionary,
+            )
+            return
+
+        if action == "grammar":
+            await _groq_section(
+                query.message,
+                word,
+                f"📝 <b>Grammar Patterns — "
+                f"{html.escape(word)}</b>",
+                (
+                    "Give common grammar patterns for "
+                    "this word. Include verb patterns, "
+                    "noun patterns, prepositions, "
+                    "to-infinitive, -ing, or complements "
+                    "only when genuinely applicable."
+                ),
+                dictionary,
             )
             return
 
@@ -2396,14 +1873,12 @@ async def analysis_callback(
         # ====================================================
 
         if action == "syn":
-
-            data = (
-                await _get_synonym_data(
-                    session
-                )
+            data = await _get_relation_data(
+                session,
+                "synonym",
             )
 
-            await _send_synonyms(
+            await _result_synonyms(
                 query.message,
                 word,
                 data,
@@ -2411,14 +1886,12 @@ async def analysis_callback(
             return
 
         if action == "ant":
-
-            data = (
-                await _get_antonym_data(
-                    session
-                )
+            data = await _get_relation_data(
+                session,
+                "antonym",
             )
 
-            await _send_antonyms(
+            await _result_antonyms(
                 query.message,
                 word,
                 data,
@@ -2426,14 +1899,12 @@ async def analysis_callback(
             return
 
         if action == "homo":
-
-            data = (
-                await _get_homophone_data(
-                    session
-                )
+            data = await _get_relation_data(
+                session,
+                "homo",
             )
 
-            await _send_homophones(
+            await _result_homophones(
                 query.message,
                 word,
                 data,
@@ -2441,14 +1912,12 @@ async def analysis_callback(
             return
 
         if action == "similar":
-
-            data = (
-                await _get_similar_data(
-                    session
-                )
+            data = await _get_relation_data(
+                session,
+                "similar",
             )
 
-            await _send_similar(
+            await _result_similar(
                 query.message,
                 word,
                 data,
@@ -2456,32 +1925,33 @@ async def analysis_callback(
             return
 
         if action == "family":
-
-            data = (
-                await _get_family_data(
-                    session
-                )
+            data = await _get_relation_data(
+                session,
+                "family",
             )
 
-            await _send_family(
+            await _result_family(
                 query.message,
                 word,
                 data,
             )
             return
 
-        if action == "root":
-
-            etymology = (
-                await _get_etymology_data(
-                    session
-                )
-            )
-
-            await _send_root(
+        if action == "levels":
+            await _groq_section(
                 query.message,
                 word,
-                etymology,
+                f"📊 <b>Word Levels — "
+                f"{html.escape(word)}</b>",
+                (
+                    "Give the CEFR level of the target "
+                    "word only when reliably known. "
+                    "Then give a few related words with "
+                    "their CEFR levels only when reliable. "
+                    "Never guess CEFR levels. "
+                    "If uncertain, clearly say so."
+                ),
+                dictionary,
             )
             return
 
@@ -2489,55 +1959,251 @@ async def analysis_callback(
         # DEEP ANALYSIS
         # ====================================================
 
-        if action == "etymology":
-
-            etymology = (
-                await _get_etymology_data(
-                    session
-                )
+        if action in {
+            "root",
+            "etymology",
+        }:
+            wiki = await _get_wiktionary(
+                session
             )
 
-            await _send_etymology(
+            if (
+                not wiki
+                or not wiki.get("etymology")
+            ):
+                await _send_unavailable(
+                    query.message
+                )
+                return
+
+            if action == "etymology":
+                title = (
+                    f"📜 <b>Etymology — "
+                    f"{html.escape(word)}</b>"
+                )
+
+                body = html.escape(
+                    wiki["etymology"]
+                )
+
+                await _send_section(
+                    query.message,
+                    title,
+                    body,
+                    "Wiktionary",
+                )
+                return
+
+            # Root is deliberately separated from
+            # synonyms and kept inside Deep Analysis.
+            root_result = await _groq(
+                f"""
+Word: {word}
+
+Wiktionary etymology:
+{wiki["etymology"]}
+
+Identify the historical root/base of the word
+ONLY if it can be reliably identified from the
+provided etymology.
+
+Explain very briefly:
+- Root
+- Original language if known
+- Basic original sense
+
+Do not guess.
+If no reliable root can be identified, say:
+"No reliable root information available."
+""",
+                220,
+            )
+
+            if not root_result:
+                await _send_unavailable(
+                    query.message
+                )
+                return
+
+            await _send_section(
                 query.message,
-                word,
-                etymology,
+                f"🌱 <b>Root — "
+                f"{html.escape(word)}</b>",
+                html.escape(root_result),
+                "Wiktionary + analysis",
             )
             return
 
-        if action == "cefr":
-
-            await _send_cefr(
+        if action == "register":
+            await _groq_section(
                 query.message,
                 word,
-            )
-            return
-
-        if action == "usage":
-
-            dictionary = (
-                await _get_dictionary_for_session(
-                    session
-                )
-            )
-
-            await _send_usage(
-                query.message,
-                word,
+                f"⚠️ <b>Register & Tone — "
+                f"{html.escape(word)}</b>",
+                (
+                    "Explain whether this word is "
+                    "neutral, formal, informal, slang, "
+                    "literary, offensive, etc. "
+                    "Only use a label when reliable. "
+                    "Explain the tone briefly."
+                ),
                 dictionary,
             )
             return
 
-        if action == "grammar":
-
-            dictionary = (
-                await _get_dictionary_for_session(
-                    session
-                )
-            )
-
-            await _send_grammar(
+        if action == "forms":
+            await _groq_section(
                 query.message,
                 word,
+                f"🔤 <b>Word Forms — "
+                f"{html.escape(word)}</b>",
+                (
+                    "List reliable standard forms of the "
+                    "word: verb, noun, adjective, adverb, "
+                    "and other common forms when they exist. "
+                    "Do not invent forms."
+                ),
+                dictionary,
+            )
+            return
+
+        if action == "frequency":
+            await _groq_section(
+                query.message,
+                word,
+                f"📊 <b>Word Frequency — "
+                f"{html.escape(word)}</b>",
+                (
+                    "Classify this word as Very common, "
+                    "Common, Less common, or Rare only "
+                    "when reasonably reliable. "
+                    "Do not invent numeric frequency data."
+                ),
+                dictionary,
+            )
+            return
+
+        if action == "usage_notes":
+            await _groq_section(
+                query.message,
+                word,
+                f"🧠 <b>Usage Notes — "
+                f"{html.escape(word)}</b>",
+                (
+                    "Give important learner notes, "
+                    "subtle meaning differences, "
+                    "common mistakes, special uses, "
+                    "or useful distinctions. "
+                    "Keep only reliable information."
+                ),
+                dictionary,
+            )
+            return
+
+        # ====================================================
+        # EXPRESSIONS & IDIOMS
+        # ====================================================
+
+        expression_tasks = {
+            "idioms": (
+                "List genuine common idioms containing "
+                "or strongly associated with this word. "
+                "Give meaning and a short example. "
+                "Do not invent idioms."
+            ),
+
+            "proverbs": (
+                "List genuine established proverbs "
+                "or sayings containing or strongly "
+                "associated with this word. "
+                "Do not invent any."
+            ),
+
+            "expressions_common": (
+                "List common English expressions using "
+                "this word. Give a concise meaning and "
+                "one short example for each."
+            ),
+
+            "fixed": (
+                "List common fixed phrases involving "
+                "this word. Give the phrase and its "
+                "meaning. Include only established usage."
+            ),
+        }
+
+        if action in expression_tasks:
+            titles = {
+                "idioms": "💬 Idioms",
+                "proverbs": "📜 Proverbs & Sayings",
+                "expressions_common": "🧠 Common Expressions",
+                "fixed": "🤝 Fixed Phrases",
+            }
+
+            await _groq_section(
+                query.message,
+                word,
+                (
+                    f"{titles[action]} — "
+                    f"<b>{html.escape(word)}</b>"
+                ),
+                expression_tasks[action],
+                dictionary,
+            )
+            return
+
+        # ====================================================
+        # SLANG & PHRASAL VERBS
+        # ====================================================
+
+        slang_tasks = {
+            "slang_result": (
+                "Say whether this word has a reliable "
+                "slang use. If yes, give the meaning, "
+                "region (US/UK/Both), and one clean "
+                "example. If none, say no reliable slang "
+                "usage found."
+            ),
+
+            "phrasal": (
+                "List common phrasal verbs formed with "
+                "this word or strongly associated with it. "
+                "Give meaning and a natural example. "
+                "Do not invent phrasal verbs."
+            ),
+
+            "usuk": (
+                "Give only genuine differences between "
+                "US and UK English involving this word: "
+                "spelling, pronunciation, meaning, "
+                "or commonness. If there is no important "
+                "difference, say so."
+            ),
+
+            "informal": (
+                "Give important informal uses of this "
+                "word that are useful for learners. "
+                "Do not call something slang unless it "
+                "really is slang."
+            ),
+        }
+
+        if action in slang_tasks:
+            titles = {
+                "slang_result": "🗣️ Slang",
+                "phrasal": "🔀 Phrasal Verbs",
+                "usuk": "🌎 US / UK Usage",
+                "informal": "⚠️ Informal Uses",
+            }
+
+            await _groq_section(
+                query.message,
+                word,
+                (
+                    f"{titles[action]} — "
+                    f"<b>{html.escape(word)}</b>"
+                ),
+                slang_tasks[action],
                 dictionary,
             )
             return
@@ -2546,26 +2212,182 @@ async def analysis_callback(
         # PRONUNCIATION
         # ====================================================
 
-        if action == "pron_result":
-
-            dictionary = (
-                await _get_dictionary_for_session(
-                    session
+        if action in {
+            "american",
+            "british",
+            "ipa",
+        }:
+            if not dictionary:
+                await _send_unavailable(
+                    query.message
                 )
+                return
+
+            phonetics = [
+                x["text"]
+                for x in dictionary.get(
+                    "phonetics",
+                    [],
+                )
+                if x.get("text")
+            ]
+
+            phonetics = _unique(
+                phonetics,
+                6,
             )
 
-            await _send_pronunciation(
+            ipa = " / ".join(
+                phonetics
+            )
+
+            if not ipa:
+                await query.message.reply_text(
+                    "ℹ️ No reliable pronunciation "
+                    "data available."
+                )
+                return
+
+            # --------------------------------------------
+            # IPA & STRESS
+            # --------------------------------------------
+
+            if action == "ipa":
+                await _send_section(
+                    query.message,
+                    f"🔤 <b>IPA & Stress — "
+                    f"{html.escape(word)}</b>",
+                    (
+                        f"IPA: "
+                        f"<b>{html.escape(ipa)}</b>\n\n"
+                        "Stress information is shown "
+                        "when reliable pronunciation "
+                        "data provides it."
+                    ),
+                    "Dictionary API",
+                )
+                return
+
+            # --------------------------------------------
+            # AUDIO
+            # --------------------------------------------
+
+            if action == "american":
+                voice = "en-US-AriaNeural"
+                flag = "🇺🇸"
+                label = "American"
+
+            else:
+                voice = "en-GB-SoniaNeural"
+                flag = "🇬🇧"
+                label = "British"
+
+            await _send_section(
                 query.message,
-                word,
-                dictionary,
+                (
+                    f"{flag} <b>{label} — "
+                    f"{html.escape(word)}</b>"
+                ),
+                (
+                    f"🔤 IPA: "
+                    f"<b>{html.escape(ipa)}</b>"
+                ),
+                "Dictionary API",
+            )
+
+            audio_path = None
+
+            try:
+                import edge_tts
+
+                with tempfile.NamedTemporaryFile(
+                    suffix=".mp3",
+                    delete=False,
+                ) as tmp:
+                    audio_path = tmp.name
+
+                communicate = edge_tts.Communicate(
+                    word,
+                    voice=voice,
+                )
+
+                await asyncio.wait_for(
+                    communicate.save(
+                        audio_path
+                    ),
+                    timeout=30,
+                )
+
+                with open(
+                    audio_path,
+                    "rb",
+                ) as audio_file:
+                    await query.message.reply_voice(
+                        voice=audio_file,
+                        caption=(
+                            f"{flag} {label} — "
+                            f"{word}"
+                        ),
+                    )
+
+            except Exception:
+                pass
+
+            finally:
+                if audio_path:
+                    try:
+                        Path(
+                            audio_path
+                        ).unlink(
+                            missing_ok=True
+                        )
+                    except Exception:
+                        pass
+
+            return
+
+        # ====================================================
+        # YOUGLISH
+        # ====================================================
+
+        if action == "youglish":
+            url = _external_urls(
+                word
+            )["youglish"]
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(
+                        f"🗣️ Open YouGlish — {word}",
+                        url=url,
+                    )
+                ],
+                [
+                    _btn(
+                        "⬅️ Back",
+                        session_id,
+                        "pron",
+                    )
+                ],
+            ])
+
+            await query.message.reply_text(
+                (
+                    "🗣️ <b>YouGlish</b>\n"
+                    "━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Listen to real examples of "
+                    f"<b>{html.escape(word)}</b> "
+                    "in spoken English."
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
             )
             return
 
     except Exception:
         try:
-            await query.message.reply_text(
-                "ℹ️ No reliable information is available "
-                "for this section right now."
+            await _send_unavailable(
+                query.message
             )
         except Exception:
             pass
