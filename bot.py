@@ -3959,19 +3959,6 @@ def build_application():
     )
 
     application.add_handler(
-        CallbackQueryHandler(
-            access_callback
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            normal_message_handler,
-        )
-    )
-
-    application.add_handler(
         CommandHandler(
             "analysis",
             analyze.analysis_command,
@@ -3982,6 +3969,26 @@ def build_application():
         CommandHandler(
             "analys",
             analyze.analysis_command,
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            analyze.analysis_callback,
+            pattern=r"^analysis:",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
+            access_callback
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            normal_message_handler,
         )
     )
     
