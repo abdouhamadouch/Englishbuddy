@@ -30,6 +30,7 @@ from telegram.ext import (
 )
 
 import edge_tts
+import analyze
 
 
 # =========================================================
