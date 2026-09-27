@@ -1986,89 +1986,70 @@ async def name_reaction(update, context):
 # =========================================================
 # HELP
 # =========================================================
-
 HELP_TEXT = """
 📚 <b>FixMyEnglish — Commands</b>
 
-🌍 <b>Translation</b>
-/tr text
-ترجم text
+🌍 <b>Language</b>
+/tr text — ترجمة
+/cor text — تصحيح الإنجليزية
+/ex word — شرح الكلمة
+/use word — توظيف الكلمة في جملة
 
-✍️ <b>Correction</b>
-/cor text
-صحح text
+🔎 <b>Word Analysis</b>
+/analysis word
+/analys word
+تحليل word
 
-📖 <b>Explanation</b>
-/ex word
-اشرح word
+تحليل الكلمة يعطيك نظرة شاملة عنها مع أزرار للمزيد من التفاصيل.
 
-🌱 <b>Word Root</b>
-/root word
-جذر word
+🌱 <b>Word Structure</b>
+/root word — جذر الكلمة
+/fw word — عائلة الكلمة
+/syn word — المرادفات
+/ant word — الأضداد
+/levels word — المرادفات حسب مستوى CEFR
 
-🧩 <b>Word Family</b>
-/fw word
-عائلة word
+📝 <b>Pronunciation & IPA</b>
+/ipaus text — IPA أمريكي
+/ipauk text — IPA بريطاني
+/us word — النطق الأمريكي
+/uk word — النطق البريطاني
+/pr word — النطق الأمريكي والبريطاني
 
-🔄 <b>Synonyms</b>
-/syn word
-مرادف word
+🇩🇿 <b>Arabic Commands</b>
+ترجم — ترجمة
+صحح — تصحيح
+اشرح — شرح
+تحليل — تحليل كلمة
+جذر — جذر الكلمة
+عائلة — عائلة الكلمة
+مرادف — مرادفات
+ضد — أضداد
+وظف — توظيف الكلمة
+امريكي — نطق أمريكي
+بريطاني — نطق بريطاني
+انطق — النطق الأمريكي والبريطاني
 
-🔻 <b>Antonyms</b>
-/ant word
-ضد word
-
-📊 <b>Levels (CEFR)</b>
-/levels word
-مستويات word
-
-🧩 <b>Word Usage</b>
-/use word
-وظف word
-
-📝 <b>IPA Transcription (Text Only)</b>
-/ipaus text
-فوناتيك_امريكي text
-/ipauk text
-فوناتيك_بريطاني text
-
-🇺🇸 <b>American TTS</b>
-/us word
-/us slowly word
-امريكي word
-امريكي بطيء word
-
-🇬🇧 <b>British TTS</b>
-/uk word
-/uk slowly word
-بريطاني word
-بريطاني بطيء word
-
-🗣️ <b>Both TTS</b>
-/pr word
-انطق word
-انطق بطيء word
-
-🤖 <b>AI</b>
-/ai your request
-
-💬 <b>Talk Mode</b>
-/talk أو تكلم — التحدث مع البوت كصديق
+🤖 <b>AI & Conversation</b>
+/ai your request — اسأل الذكاء الاصطناعي
+/talk — Talk Mode
+تكلم — Talk Mode
 
 📚 <b>Vocabulary</b>
-/vocab — عرض الكلمات المحفوظة
+/vocab — الكلمات المحفوظة
 
 ⚙️ <b>Group Auto Correction</b>
 /on — تشغيل التصحيح التلقائي
 /off — إيقاف التصحيح التلقائي
 
-💬 <b>Reply mode</b>
-
-Reply to a message and send:
+💬 <b>Reply Mode</b>
+يمكنك الرد على أي رسالة تحتوي على كلمة ثم إرسال الأمر بدون كتابة الكلمة:
 
 /tr
 /cor
 /ex
+/analysis
+/analys
 /root
 /fw
 /syn
@@ -2081,8 +2062,12 @@ Reply to a message and send:
 /uk
 /pr
 
-The command will be applied to the message you replied to.
+أو:
+تحليل
+
+سيتم تطبيق الأمر على الكلمة الموجودة في الرسالة التي رددت عليها.
 """
+
 
 
 # =========================================================
@@ -3247,6 +3232,7 @@ ARABIC_COMMANDS = {
     "ترجم": "tr",
     "صحح": "cor",
     "اشرح": "ex",
+    "تحليل": "analysis",
     "جذر": "root",
     "عائلة": "fw",
     "مرادف": "syn",
@@ -3296,6 +3282,15 @@ async def arabic_command_handler(update, context):
         if len(parts) == 2
         else ""
     )
+
+    if action == "analysis":
+
+        await analyze.analysis_command(
+            update,
+            context,
+        )
+
+        return
 
     if action == "talk":
 
@@ -3671,6 +3666,8 @@ async def set_command_menu(application):
             ("tr", "Translate"),
             ("cor", "Correct English"),
             ("ex", "Explain"),
+            ("analysis", "Analyze a word"),
+            ("analys", "Analyze a word"),
             ("root", "Word root"),
             ("fw", "Word family"),
             ("syn", "Synonyms"),
@@ -3757,6 +3754,12 @@ def build_application():
 
         .post_init(post_init)
         .build()
+    )
+
+    analyze.configure(
+        ask_groq,
+        get_target_text,
+        is_approved,
     )
 
     application.add_handler(
@@ -3950,6 +3953,13 @@ def build_application():
 
     application.add_handler(
         CallbackQueryHandler(
+            analyze.analysis_callback,
+            pattern=r"^analysis:",
+        )
+    )
+
+    application.add_handler(
+        CallbackQueryHandler(
             access_callback
         )
     )
@@ -3960,6 +3970,21 @@ def build_application():
             normal_message_handler,
         )
     )
+
+    application.add_handler(
+        CommandHandler(
+            "analysis",
+            analyze.analysis_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "analys",
+            analyze.analysis_command,
+        )
+    )
+    
 
     # =====================================================
     # GROUP ACCESS REQUEST
