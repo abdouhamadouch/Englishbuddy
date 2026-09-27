@@ -384,19 +384,25 @@ def format_ai_response(text):
     return text.strip()
 
 
-async def send_long_reply(update, text):
+async def send_long_reply(update, text, reply_markup=None):
     message = update.effective_message
 
     if not message:
         return
 
     formatted = format_ai_response(text)
+    parts = split_long_text(formatted)
 
-    for part in split_long_text(formatted):
+    for i, part in enumerate(parts):
         try:
+            kwargs = {"parse_mode": "HTML"}
+            # إضافة الزر فقط في الجزء الأخير من الرسالة
+            if reply_markup and i == len(parts) - 1:
+                kwargs["reply_markup"] = reply_markup
+                
             await message.reply_text(
                 part,
-                parse_mode="HTML",
+                **kwargs
             )
 
         except Exception as e:
@@ -405,13 +411,18 @@ async def send_long_reply(update, text):
                 repr(e),
                 flush=True,
             )
-
+            
+            kwargs = {}
+            if reply_markup and i == len(parts) - 1:
+                kwargs["reply_markup"] = reply_markup
+                
             await message.reply_text(
                 re.sub(
                     r"<[^>]+>",
                     "",
                     part,
-                )
+                ),
+                **kwargs
             )
 
 
@@ -504,6 +515,7 @@ async def ask_groq(prompt, max_tokens=1200, system_prompt=None):
 # =========================================================
 # LANGUAGE FUNCTIONS
 # =========================================================
+
 async def free_ai(text):
     return await ask_groq(
         prompt=text,
@@ -594,7 +606,6 @@ You must return ONLY the filled structure below. Do not use decorative stars.
     return await ask_groq(prompt, 350)
 
 
-
 async def translate_text(text):
     return await ask_groq(
         f"""
@@ -620,6 +631,126 @@ Text:
 # =========================================================
 # AI FUNCTIONS — NATURAL & ORGANIZED ANSWERS
 # =========================================================
+
+async def get_ipa_transcription(text, dialect):
+    words_count = len(text.split())
+    is_us = (dialect == "US")
+    country = "American" if is_us else "British"
+    flag = "🇺🇸" if is_us else "🇬🇧"
+    
+    # إذا كانت كلمة أو كلمتين: نعطي الفونيتيك + المعنى
+    if words_count <= 2:
+        prompt = f"""
+Provide the {country} English pronunciation (IPA) and the Arabic meaning for the following: "{text}"
+
+You must return ONLY the filled structure below. Do not use decorative stars.
+
+🗣️ {country} Pronunciation
+━━━━━━━━━━━━━━━━━━
+
+🔤 Word:
+{text}
+
+{flag} IPA:
+[write the real IPA here]
+
+🇩🇿 Meaning:
+[write the short Arabic meaning here]
+━━━━━━━━━━━━━━━━━━
+"""
+    # إذا كانت الجملة أطول (3 كلمات فأكثر): نعطي الفونيتيك فقط
+    else:
+        prompt = f"""
+Convert the following English text into {country} English IPA transcription.
+Do NOT provide Arabic translations or explanations.
+
+You must return ONLY the filled structure below. Do not use decorative stars.
+
+🗣️ {country} Transcription
+━━━━━━━━━━━━━━━━━━
+
+🔤 Text:
+{text}
+
+{flag} IPA:
+[write the IPA transcription of the whole text here]
+━━━━━━━━━━━━━━━━━━
+"""
+
+    for attempt in range(4):
+        result = await ask_groq(prompt, 600)
+        
+        if result and not result.startswith("❌"):
+            return result.strip()
+            
+        if attempt < 3:
+            await asyncio.sleep(1)
+            
+    return f"⚠️ I couldn't get the {country} IPA right now. Please try again."
+
+
+async def syn_levels_text(text):
+    prompt = f"""
+Give synonyms and antonyms graded by CEFR levels (A1, A2, B1, B2, C1, C2) for this English word.
+
+Word:
+{text}
+
+Use this EXACT structure. Do not use decorative stars.
+
+📊 SYNONYMS & ANTONYMS BY LEVEL
+━━━━━━━━━━━━━━━━━━
+
+🔤 {text} — [main Arabic meaning]
+
+━━━━━━━━━━━━━━━━━━
+
+🟢 A1
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+🟡 A2
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+🔵 B1
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+🟣 B2
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+🔴 C1
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+⚫ C2
+Syn: [synonym] — [Arabic meaning]
+Ant: [antonym] — [Arabic meaning]
+
+━━━━━━━━━━━━━━━━━━
+
+Rules:
+- Provide exactly one natural synonym and one natural antonym for each level if possible.
+- If a level genuinely does not have a natural synonym or antonym, skip that specific Syn/Ant line, but try your best to find accurate graded words.
+- Keep the Arabic translations very short and precise.
+- Do not add introductions or follow-up questions.
+- Maintain the color emojis for the levels as shown.
+"""
+
+    for attempt in range(4):
+        result = await ask_groq(prompt, 1200)
+        
+        if result and not result.startswith("❌"):
+            return result.strip()
+            
+        if attempt < 3:
+            await asyncio.sleep(1)
+            
+    return "⚠️ I couldn't get the CEFR levels right now. Please try again."
+
+
 async def correct_text(text):
 
     prompt = f"""
@@ -724,9 +855,6 @@ Text:
             await asyncio.sleep(1)
 
     return "⚠️ I couldn't check the text right now. Please try again."
-
-
-
 
 
 async def explain_text(text):
@@ -1013,13 +1141,8 @@ Word:
 # WORD ROOT
 # =========================================================
 
-# =========================================================
-# WORD ROOT
-# =========================================================
-
 async def root_word(text):
-    return await ask_groq(
-        f"""
+    prompt = f"""
 Analyze the English word and explain its underlying classical root
 (Latin, Greek, or another important source root) when one genuinely exists.
 
@@ -1125,9 +1248,18 @@ Rules:
 
 Word:
 {text}
-""",
-        1600,
-    )
+"""
+
+    for attempt in range(4):
+        result = await ask_groq(prompt, 1600)
+        
+        if result and not result.startswith("❌"):
+            return result.strip()
+            
+        if attempt < 3:
+            await asyncio.sleep(1)
+            
+    return "⚠️ I couldn't get the word root right now. Please try again."
 
 
 # =========================================================
@@ -1135,8 +1267,7 @@ Word:
 # =========================================================
 
 async def word_family(text):
-    return await ask_groq(
-        f"""
+    prompt = f"""
 Give the English word family of:
 
 {text}
@@ -1210,10 +1341,18 @@ Rules:
 
 Word:
 {text}
-""",
-        1500,
-    )
+"""
 
+    for attempt in range(4):
+        result = await ask_groq(prompt, 1500)
+        
+        if result and not result.startswith("❌"):
+            return result.strip()
+            
+        if attempt < 3:
+            await asyncio.sleep(1)
+            
+    return "⚠️ I couldn't get the word family right now. Please try again."
 
 
 # =========================================================
@@ -1298,8 +1437,6 @@ async def talk_with_ai(text, user_name):
 # =========================================================
 # AUTOMATIC CORRECTION
 # =========================================================
-# AUTOMATIC CORRECTION
-# =========================================================
 
 async def auto_correct_chat(text):
 
@@ -1352,7 +1489,6 @@ Text:
 {text}
 """
 
-    # Retry up to 4 times if AI returns an empty response
     for attempt in range(4):
         try:
             result = await ask_groq(prompt, 350)
@@ -1366,7 +1502,6 @@ Text:
         if attempt < 3:
             await asyncio.sleep(1)
 
-    # Never return an empty response
     return "⚠️ I couldn't check the sentence right now. Please try again."
 
 
@@ -1472,12 +1607,22 @@ async def send_pronunciation(update, word, dialect, slow=False):
         )
         return
 
+    # تجهيز اللهجة ورابط YouGlish
+    encoded_word = quote(word)
     if dialect == "US":
         voice = US_VOICE
+        yg_url = f"https://youglish.com/pronounce/{encoded_word}/english/us"
     elif dialect == "UK":
         voice = UK_VOICE
+        yg_url = f"https://youglish.com/pronounce/{encoded_word}/english/uk"
     else:
         voice = US_VOICE
+        yg_url = f"https://youglish.com/pronounce/{encoded_word}/english"
+
+    # إنشاء زر YouGlish
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🎧 YouGlish", url=yg_url)]]
+    )
 
     if word_count <= 3:
 
@@ -1496,9 +1641,11 @@ async def send_pronunciation(update, word, dialect, slow=False):
         else:
             info = await both_pronunciation(word)
 
+        # إرسال رسالة الـ IPA مع الزر
         await send_long_reply(
             update,
             info,
+            reply_markup=keyboard
         )
 
     audio = await make_audio(
@@ -1870,23 +2017,33 @@ HELP_TEXT = """
 /ant word
 ضد word
 
+📊 <b>Levels (CEFR)</b>
+/levels word
+مستويات word
+
 🧩 <b>Word Usage</b>
 /use word
 وظف word
 
-🇺🇸 <b>American</b>
+📝 <b>IPA Transcription (Text Only)</b>
+/ipaus text
+فوناتيك_امريكي text
+/ipauk text
+فوناتيك_بريطاني text
+
+🇺🇸 <b>American TTS</b>
 /us word
 /us slowly word
 امريكي word
 امريكي بطيء word
 
-🇬🇧 <b>British</b>
+🇬🇧 <b>British TTS</b>
 /uk word
 /uk slowly word
 بريطاني word
 بريطاني بطيء word
 
-🗣️ <b>Both</b>
+🗣️ <b>Both TTS</b>
 /pr word
 انطق word
 انطق بطيء word
@@ -1915,7 +2072,10 @@ Reply to a message and send:
 /fw
 /syn
 /ant
+/levels
 /use
+/ipaus
+/ipauk
 /us
 /uk
 /pr
@@ -2859,6 +3019,66 @@ async def ant_command(update, context):
     )
 
 
+async def levels_command(update, context):
+    chat = update.effective_chat  
+
+    if (  
+        chat.type == "private"  
+        and not is_approved(update.effective_user.id)  
+    ):  
+        return  
+
+    text = get_target_text(update.effective_message)  
+
+    if not text:  
+        await update.effective_message.reply_text(  
+            "Usage: /levels word\n\n"  
+            "Or reply to a message with /levels"  
+        )  
+        return  
+
+    await send_long_reply(  
+        update,  
+        await syn_levels_text(text),  
+    )
+
+
+async def ipaus_command(update, context):
+    chat = update.effective_chat  
+
+    if chat.type == "private" and not is_approved(update.effective_user.id):  
+        return  
+
+    text = get_target_text(update.effective_message)  
+
+    if not text:  
+        await update.effective_message.reply_text(  
+            "Usage: /ipaus text\n\n"  
+            "Or reply to a message with /ipaus"  
+        )  
+        return  
+
+    await send_long_reply(update, await get_ipa_transcription(text, "US"))
+
+
+async def ipauk_command(update, context):
+    chat = update.effective_chat  
+
+    if chat.type == "private" and not is_approved(update.effective_user.id):  
+        return  
+
+    text = get_target_text(update.effective_message)  
+
+    if not text:  
+        await update.effective_message.reply_text(  
+            "Usage: /ipauk text\n\n"  
+            "Or reply to a message with /ipauk"  
+        )  
+        return  
+
+    await send_long_reply(update, await get_ipa_transcription(text, "UK"))
+
+
 async def use_command(update, context):
 
     chat = update.effective_chat
@@ -3030,7 +3250,10 @@ ARABIC_COMMANDS = {
     "عائلة": "fw",
     "مرادف": "syn",
     "ضد": "ant",
+    "مستويات": "levels",
     "وظف": "use",
+    "فوناتيك_امريكي": "ipaus",
+    "فوناتيك_بريطاني": "ipauk",
     "امريكي": "us",
     "بريطاني": "uk",
     "انطق": "pr",
@@ -3165,11 +3388,32 @@ async def arabic_command_handler(update, context):
             await antonyms_text(argument),
         )
 
+    elif action == "levels":
+        
+        await send_long_reply(
+            update,
+            await syn_levels_text(argument),
+        )
+
     elif action == "use":
 
         await send_long_reply(
             update,
             await use_word(argument),
+        )
+
+    elif action == "ipaus":
+        
+        await send_long_reply(
+            update, 
+            await get_ipa_transcription(argument, "US")
+        )
+        
+    elif action == "ipauk":
+        
+        await send_long_reply(
+            update, 
+            await get_ipa_transcription(argument, "UK")
         )
 
     elif action == "us":
@@ -3430,7 +3674,10 @@ async def set_command_menu(application):
             ("fw", "Word family"),
             ("syn", "Synonyms"),
             ("ant", "Antonyms"),
+            ("levels", "Synonyms by CEFR levels"),
             ("use", "Use a word"),
+            ("ipaus", "US IPA (Text)"),
+            ("ipauk", "UK IPA (Text)"),
             ("on", "Turn auto correction on"),
             ("off", "Turn auto correction off"),
             ("us", "American pronunciation"),
@@ -3585,6 +3832,27 @@ def build_application():
         CommandHandler(
             "ant",
             ant_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "levels",
+            levels_command,
+        )
+    )
+    
+    application.add_handler(
+        CommandHandler(
+            "ipaus",
+            ipaus_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "ipauk",
+            ipauk_command,
         )
     )
 
