@@ -7,6 +7,7 @@ import threading
 import asyncio
 import time
 import html
+from urllib.parse import quote
 from pathlib import Path
 
 from flask import Flask
