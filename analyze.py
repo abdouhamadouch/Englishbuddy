@@ -683,12 +683,82 @@ async def _build_main_analysis(
     meanings = _meanings(dictionary)
 
     if meanings:
+        source = "\n".join(
+            f"- {x['pos']}: {x['definition']}"
+            for x in meanings[:8]
+        )
+
+        examples = "\n".join(
+            f"- {x['pos']}: {x['example']}"
+            for x in meanings[:5]
+            if x.get("example")
+        )
+
+        analysis_prompt = f"""
+Analyze the English word "{word}" for a learner.
+
+Dictionary meanings:
+{source}
+
+Dictionary examples:
+{examples}
+
+Write a concise but real learner-friendly analysis.
+
+Cover these points naturally, in a short organized paragraph:
+1. What the word means and its main part of speech.
+2. Its most important meanings or senses.
+3. How it is normally used in everyday English.
+4. Whether it is neutral, formal, informal, slang, literary, etc.,
+   ONLY when this is reliably established.
+5. Its CEFR level ONLY if reasonably reliable. If the level is not
+   reliably established, say "CEFR level is not reliably established"
+   rather than guessing.
+6. Mention an important usage distinction or learner note if one
+   is genuinely useful.
+
+Do NOT invent facts.
+Do NOT invent slang.
+Do NOT invent CEFR levels.
+Do NOT give synonyms or antonyms here because they have their own button.
+
+Use simple clear English.
+Do not use markdown, bullets, stars, or headings.
+Keep it around 5-7 sentences.
+"""
+
+        result = await _groq(
+            analysis_prompt,
+            400,
+        )
+
+        arabic = await _arabic_meaning(
+            word,
+            meanings,
+        )
+
+        if result:
+            text = html.escape(result)
+
+            if arabic:
+                text += (
+                    "\n\n🇩🇿 "
+                    f"<b>{html.escape(arabic)}</b>"
+                )
+
+            return (
+                "🔎 <b>Word Analysis</b>\n"
+                "━━━━━━━━━━━━━━━━━━\n\n"
+                + text
+            )
+
+        # Reliable fallback when AI is unavailable.
         first = meanings[0]
 
         text = (
             f"<b>{html.escape(word)}</b> is mainly used as a "
-            f"<b>{html.escape(first['pos'] or 'word')}</b> meaning "
-            f"“{html.escape(first['definition'])}”."
+            f"<b>{html.escape(first['pos'] or 'word')}</b>. "
+            f"It means “{html.escape(first['definition'])}”."
         )
 
         if (
@@ -697,18 +767,13 @@ async def _build_main_analysis(
             != first["definition"]
         ):
             text += (
-                "\nIt can also mean "
+                f" It can also mean "
                 f"“{html.escape(meanings[1]['definition'])}”."
             )
 
-        arabic = await _arabic_meaning(
-            word,
-            meanings,
-        )
-
         if arabic:
             text += (
-                f"\n\n🇩🇿 "
+                "\n\n🇩🇿 "
                 f"<b>{html.escape(arabic)}</b>"
             )
 
@@ -722,17 +787,20 @@ async def _build_main_analysis(
         f"""
 Analyze the English word "{word}" for an English learner.
 
-Give:
-1. Main part of speech
-2. Main meaning
-3. Another important meaning if relevant
-4. Concise Arabic meaning
+Give a short natural analysis covering:
+- main part of speech
+- main meaning
+- another important meaning if relevant
+- normal usage
+- register or slang only if reliable
+- CEFR level only if reliable
+- concise Arabic meaning
 
-Use established knowledge only.
 Do not invent facts.
-Keep it short.
+Keep it around 5-7 sentences.
+Do not use bullets or markdown.
 """,
-        250,
+        350,
     )
 
     if result:
@@ -803,7 +871,7 @@ def _btn(
     return InlineKeyboardButton(
         text,
         callback_data=(
-            f"wa:{session_id}:{action}"
+            f"analysis:{session_id}:{action}"
         ),
     )
 
@@ -824,7 +892,7 @@ def _main_keyboard(
                 "meaning",
             ),
             _btn(
-                "🔗 Word Relations",
+                "🔗 Relations",
                 session_id,
                 "relations",
             ),
@@ -836,14 +904,14 @@ def _main_keyboard(
                 "deep",
             ),
             _btn(
-                "💬 Expressions & Idioms",
+                "💬 Expressions",
                 session_id,
                 "expressions",
             ),
         ],
         [
             _btn(
-                "🗣️ Slang & Phrasal Verbs",
+                "🗣️ Slang & Phrasal",
                 session_id,
                 "slang",
             ),
@@ -1657,7 +1725,7 @@ async def analysis_callback(
 
     if (
         len(parts) != 3
-        or parts[0] != "wa"
+        or parts[0] != "analysis"
     ):
         return
 
