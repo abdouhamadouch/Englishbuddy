@@ -10,6 +10,8 @@
 # - The main analysis is attempted first.
 # - Each feature fetches ONLY its own required data when requested.
 # - Failure of one feature never affects another feature.
+# - Failed/empty API results are NOT cached, so pressing the button
+#   again retries the request.
 # - A new analysis by the same user invalidates the old session.
 
 import asyncio
@@ -78,9 +80,8 @@ def _clean_word(text):
     if not text:
         return ""
 
-    text = text.strip()
+    text = str(text).strip()
 
-    # Remove bot commands if present.
     text = re.sub(
         r"^/(?:analysis|analys)(?:@\w+)?\s*",
         "",
@@ -88,7 +89,6 @@ def _clean_word(text):
         flags=re.IGNORECASE,
     )
 
-    # Remove surrounding punctuation.
     text = text.strip(
         " \t\r\n.,!?;:\"'“”‘’()[]{}<>"
     )
@@ -107,8 +107,6 @@ def _new_session_id():
 def _create_session(user_id, word, data=None):
     session_id = _new_session_id()
 
-    # A new analysis invalidates only the previous
-    # analysis of THIS user.
     _sessions[user_id] = {
         "session_id": session_id,
         "word": word,
@@ -249,6 +247,9 @@ async def _dictionary_data(word):
                 }
             )
 
+    if not meanings and not phonetics:
+        return None
+
     return {
         "word": entry.get(
             "word",
@@ -285,7 +286,7 @@ async def _datamuse(
     data = await _fetch_json(url)
 
     if not isinstance(data, list):
-        return []
+        return None
 
     results = []
 
@@ -322,7 +323,6 @@ async def _datamuse(
 
 # ============================================================
 # WORDNET
-# Optional dependency.
 # ============================================================
 
 def _wordnet_sync(word):
@@ -381,11 +381,7 @@ def _wordnet_sync(word):
         }
 
     except Exception:
-        return {
-            "synonyms": [],
-            "antonyms": [],
-            "family": [],
-        }
+        return None
 
 
 async def _wordnet(word):
@@ -396,7 +392,7 @@ async def _wordnet(word):
 
 
 # ============================================================
-# WIKTIONARY ETYMOLOGY
+# WIKTIONARY
 # ============================================================
 
 def _strip_wiki_markup(text):
@@ -467,7 +463,7 @@ async def _wiktionary_etymology(word):
             ["*"]
         )
     except Exception:
-        return ""
+        return None
 
     match = re.search(
         r"===+\s*Etymology(?:\s+\d+)?\s*===+"
@@ -477,7 +473,7 @@ async def _wiktionary_etymology(word):
     )
 
     if not match:
-        return ""
+        return None
 
     result = _strip_wiki_markup(
         match.group(1)
@@ -490,29 +486,27 @@ async def _wiktionary_etymology(word):
             + "..."
         )
 
-    return result
+    return result or None
 
 
 # ============================================================
-# DATA CACHE HELPERS
+# CACHE HELPERS
 #
-# Only the requested source is fetched.
+# IMPORTANT:
+# Empty/failing results are NEVER cached.
+# Therefore pressing a failed button retries.
 # ============================================================
 
-async def _get_dictionary_for_session(
-    session,
-):
+async def _get_dictionary_for_session(session):
     cached = session["data"].get(
         "dictionary"
     )
 
-    if cached is not None:
+    if cached:
         return cached
 
-    word = session["word"]
-
     dictionary = await _dictionary_data(
-        word
+        session["word"]
     )
 
     if dictionary:
@@ -524,28 +518,33 @@ async def _get_dictionary_for_session(
 
 
 async def _get_synonym_data(session):
+    cached = session["data"].get(
+        "synonym_data"
+    )
+
+    if cached:
+        return cached
+
     word = session["word"]
 
-    if "synonym_data" in session["data"]:
-        return session["data"][
-            "synonym_data"
-        ]
-
-    datamuse_task = _datamuse(
-        word,
-        "rel_syn",
-    )
-
-    wordnet_task = _wordnet(word)
-
     datamuse, wordnet = await asyncio.gather(
-        datamuse_task,
-        wordnet_task,
+        _datamuse(
+            word,
+            "rel_syn",
+        ),
+        _wordnet(word),
     )
+
+    # If both sources failed, do NOT cache.
+    if not datamuse and not wordnet:
+        return {
+            "datamuse": datamuse or [],
+            "wordnet": wordnet or {},
+        }
 
     result = {
-        "datamuse": datamuse,
-        "wordnet": wordnet,
+        "datamuse": datamuse or [],
+        "wordnet": wordnet or {},
     }
 
     session["data"][
@@ -556,28 +555,32 @@ async def _get_synonym_data(session):
 
 
 async def _get_antonym_data(session):
+    cached = session["data"].get(
+        "antonym_data"
+    )
+
+    if cached:
+        return cached
+
     word = session["word"]
 
-    if "antonym_data" in session["data"]:
-        return session["data"][
-            "antonym_data"
-        ]
-
-    datamuse_task = _datamuse(
-        word,
-        "rel_ant",
-    )
-
-    wordnet_task = _wordnet(word)
-
     datamuse, wordnet = await asyncio.gather(
-        datamuse_task,
-        wordnet_task,
+        _datamuse(
+            word,
+            "rel_ant",
+        ),
+        _wordnet(word),
     )
+
+    if not datamuse and not wordnet:
+        return {
+            "datamuse": datamuse or [],
+            "wordnet": wordnet or {},
+        }
 
     result = {
-        "datamuse": datamuse,
-        "wordnet": wordnet,
+        "datamuse": datamuse or [],
+        "wordnet": wordnet or {},
     }
 
     session["data"][
@@ -588,14 +591,21 @@ async def _get_antonym_data(session):
 
 
 async def _get_family_data(session):
-    word = session["word"]
+    cached = session["data"].get(
+        "family_data"
+    )
 
-    if "family_data" in session["data"]:
-        return session["data"][
-            "family_data"
-        ]
+    if cached:
+        return cached
 
-    result = await _wordnet(word)
+    result = await _wordnet(
+        session["word"]
+    )
+
+    if not result or not result.get(
+        "family"
+    ):
+        return result or {}
 
     session["data"][
         "family_data"
@@ -605,17 +615,20 @@ async def _get_family_data(session):
 
 
 async def _get_similar_data(session):
-    word = session["word"]
+    cached = session["data"].get(
+        "similar_data"
+    )
 
-    if "similar_data" in session["data"]:
-        return session["data"][
-            "similar_data"
-        ]
+    if cached:
+        return cached
 
     result = await _datamuse(
-        word,
+        session["word"],
         "sp",
     )
+
+    if not result:
+        return []
 
     session["data"][
         "similar_data"
@@ -625,25 +638,21 @@ async def _get_similar_data(session):
 
 
 async def _get_homophone_data(session):
+    cached = session["data"].get(
+        "homophone_data"
+    )
+
+    if cached:
+        return cached
+
     word = session["word"]
 
-    if "homophone_data" in session["data"]:
-        return session["data"][
-            "homophone_data"
-        ]
-
-    dictionary_task = _dictionary_data(
-        word
-    )
-
-    sound_task = _datamuse(
-        word,
-        "sl",
-    )
-
     dictionary, sound_alikes = await asyncio.gather(
-        dictionary_task,
-        sound_task,
+        _dictionary_data(word),
+        _datamuse(
+            word,
+            "sl",
+        ),
     )
 
     if dictionary:
@@ -653,27 +662,32 @@ async def _get_homophone_data(session):
 
     result = {
         "dictionary": dictionary,
-        "sound_alikes": sound_alikes,
+        "sound_alikes": sound_alikes or [],
     }
 
-    session["data"][
-        "homophone_data"
-    ] = result
+    # Cache only if at least one source returned data.
+    if dictionary or sound_alikes:
+        session["data"][
+            "homophone_data"
+        ] = result
 
     return result
 
 
 async def _get_etymology_data(session):
-    word = session["word"]
+    cached = session["data"].get(
+        "etymology_data"
+    )
 
-    if "etymology_data" in session["data"]:
-        return session["data"][
-            "etymology_data"
-        ]
+    if cached:
+        return cached
 
     result = await _wiktionary_etymology(
-        word
+        session["word"]
     )
+
+    if not result:
+        return ""
 
     session["data"][
         "etymology_data"
@@ -683,18 +697,21 @@ async def _get_etymology_data(session):
 
 
 async def _get_collocation_data(session):
-    word = session["word"]
+    cached = session["data"].get(
+        "collocation_data"
+    )
 
-    if "collocation_data" in session["data"]:
-        return session["data"][
-            "collocation_data"
-        ]
+    if cached:
+        return cached
 
     result = await _datamuse(
-        word,
+        session["word"],
         "rel_trg",
         max_results=12,
     )
+
+    if not result:
+        return []
 
     session["data"][
         "collocation_data"
@@ -771,7 +788,7 @@ def _get_synonyms(data):
     wn = data.get(
         "wordnet",
         {},
-    )
+    ) or {}
 
     return _unique(
         [
@@ -795,7 +812,7 @@ def _get_antonyms(data):
     wn = data.get(
         "wordnet",
         {},
-    )
+    ) or {}
 
     return _unique(
         [
@@ -819,7 +836,7 @@ def _get_word_family(data):
     wn = data.get(
         "wordnet",
         {}
-    )
+    ) or {}
 
     return _unique(
         wn.get(
@@ -847,9 +864,11 @@ async def _groq_text(
             max_tokens=max_tokens,
             system_prompt=(
                 "You are a precise English-learning assistant. "
-                "Use ONLY the information supplied by the user. "
-                "Do not invent facts, meanings, synonyms, "
-                "etymology, pronunciation, or examples."
+                "Use supplied source information when it is provided. "
+                "For general English-learning questions, you may use "
+                "well-established English knowledge. "
+                "Do not invent obscure facts, meanings, etymology, "
+                "pronunciation, or unsupported claims."
             ),
         )
 
@@ -859,7 +878,9 @@ async def _groq_text(
                 timeout=15,
             )
 
-        return str(result).strip()
+        result = str(result).strip()
+
+        return result
 
     except Exception:
         return ""
@@ -892,11 +913,6 @@ async def _arabic_meaning(
 
 # ============================================================
 # MAIN ANALYSIS
-#
-# IMPORTANT:
-# Dictionary API is OPTIONAL here.
-# If it fails, we STILL create the session
-# and STILL show the buttons.
 # ============================================================
 
 async def _build_main_analysis(
@@ -907,94 +923,104 @@ async def _build_main_analysis(
         dictionary
     )
 
-    if not meanings:
-        # Dictionary failed.
-        # Try Groq as a secondary way to produce
-        # the main learner-friendly analysis.
-        result = await _groq_text(
-            f"""
-Give a very short learner-friendly analysis of
-the English word "{word}".
+    # --------------------------------------------------------
+    # Dictionary API worked
+    # --------------------------------------------------------
 
-Use only generally established English knowledge.
-Include:
-- the most common part of speech
-- the main meaning
-- whether it has another common use if relevant
-- a concise Arabic meaning
+    if meanings:
+        first = meanings[0]
 
-Keep it to about 4-6 short lines.
-Do not invent obscure information.
-""",
-            max_tokens=220,
+        pos = first["pos"] or "word"
+        definition = first["definition"]
+
+        paragraph = (
+            f"<b>{html.escape(word)}</b> is mainly used as a "
+            f"<b>{html.escape(pos)}</b> meaning "
+            f"“{html.escape(definition)}”."
         )
 
-        if result:
-            return (
-                "🔎 <b>Word Analysis</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                f"{html.escape(result)}"
+        if len(meanings) > 1:
+            second = meanings[1]
+
+            if (
+                second["definition"]
+                and second["definition"]
+                != definition
+            ):
+                paragraph += (
+                    f" It can also mean "
+                    f"“{html.escape(second['definition'])}”."
+                )
+
+        example = first.get(
+            "example",
+            "",
+        )
+
+        if example:
+            paragraph += (
+                f"\nFor example: "
+                f"“{html.escape(example)}”"
             )
 
-        # Even if every source fails, the analysis session
-        # must still exist and the buttons must still appear.
+        arabic = await _arabic_meaning(
+            word,
+            meanings,
+        )
+
+        if arabic:
+            paragraph += (
+                f"\n🇩🇿 <b>{html.escape(arabic)}</b>"
+            )
+
         return (
             "🔎 <b>Word Analysis</b>\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>{html.escape(word)}</b>\n"
-            "ℹ️ Main definition data is temporarily unavailable.\n"
-            "You can still use the analysis sections below."
+            + paragraph
         )
 
-    first = meanings[0]
+    # --------------------------------------------------------
+    # Dictionary failed.
+    # Use Groq as fallback.
+    # --------------------------------------------------------
 
-    pos = first["pos"] or "word"
-    definition = first["definition"]
+    result = await _groq_text(
+        f"""
+Analyze the English word "{word}" for an English learner.
 
-    paragraph = (
-        f"<b>{html.escape(word)}</b> is mainly used as a "
-        f"<b>{html.escape(pos)}</b> meaning "
-        f"“{html.escape(definition)}”."
+Give a concise natural analysis of about 4–6 short lines.
+
+Include:
+- the most common part of speech
+- the main common meaning
+- another common meaning or use if relevant
+- a concise Arabic meaning
+
+Use ordinary, well-established English knowledge.
+Do not invent obscure meanings or facts.
+Do not use Markdown.
+""",
+        max_tokens=250,
     )
 
-    if len(meanings) > 1:
-        second = meanings[1]
-
-        if (
-            second["definition"]
-            and second["definition"]
-            != definition
-        ):
-            paragraph += (
-                f" It can also mean "
-                f"“{html.escape(second['definition'])}”."
-            )
-
-    example = first.get(
-        "example",
-        "",
-    )
-
-    if example:
-        paragraph += (
-            f" For example: "
-            f"“{html.escape(example)}”"
+    if result:
+        return (
+            "🔎 <b>Word Analysis</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n\n"
+            f"{html.escape(result)}"
         )
 
-    arabic = await _arabic_meaning(
-        word,
-        meanings,
-    )
-
-    if arabic:
-        paragraph += (
-            f"\n🇩🇿 <b>{html.escape(arabic)}</b>"
-        )
+    # --------------------------------------------------------
+    # Absolute fallback.
+    # The buttons MUST still appear.
+    # --------------------------------------------------------
 
     return (
         "🔎 <b>Word Analysis</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
-        + paragraph
+        f"🔤 <b>{html.escape(word)}</b>\n"
+        "ℹ️ The main definition could not be loaded right now.\n"
+        "You can still use the sections below."
     )
 
 
@@ -1030,36 +1056,31 @@ def _dictionary_links(word):
     )
 
 
+def _links_html(word):
+    cambridge, oxford, youglish = (
+        _dictionary_links(word)
+    )
+
+    return (
+        "\n\n"
+        "🔗 <b>Useful Links</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f'<a href="{html.escape(cambridge, quote=True)}">📘 Cambridge</a>'
+        "   •   "
+        f'<a href="{html.escape(oxford, quote=True)}">📕 Oxford</a>\n'
+        f'<a href="{html.escape(youglish, quote=True)}">🗣️ YouGlish</a>'
+    )
+
+
 # ============================================================
 # MAIN KEYBOARD
 # ============================================================
 
 def _main_keyboard(
-    word,
     session_id,
 ):
-    cambridge, oxford, youglish = (
-        _dictionary_links(word)
-    )
-
     return InlineKeyboardMarkup(
         [
-            [
-                InlineKeyboardButton(
-                    "📘 Cambridge",
-                    url=cambridge,
-                ),
-                InlineKeyboardButton(
-                    "📕 Oxford",
-                    url=oxford,
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🗣️ YouGlish",
-                    url=youglish,
-                ),
-            ],
             [
                 InlineKeyboardButton(
                     "📖 Meaning & Usage",
@@ -1237,6 +1258,10 @@ def _pron_keyboard(
     session_id,
     word,
 ):
+    youglish = _dictionary_links(
+        word
+    )[2]
+
     return InlineKeyboardMarkup(
         [
             [
@@ -1245,14 +1270,6 @@ def _pron_keyboard(
                     callback_data=(
                         f"wa:{session_id}:pron_result"
                     ),
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "🗣️ YouGlish",
-                    url=_dictionary_links(
-                        word
-                    )[2],
                 ),
             ],
             [
@@ -1583,22 +1600,21 @@ async def _send_homophones(
                     tag[5:]
                 )
 
-        if (
-            source_prons
-            and pron_values
-        ):
-            for p in pron_values:
-                clean = re.sub(
-                    r"[^a-zA-Zəɪʊʌɔɑæɛɒːʃʒθðŋtʃdʒˈˌ]",
-                    "",
-                    p,
-                ).lower()
+        for p in pron_values:
+            clean = re.sub(
+                r"[^a-zA-Zəɪʊʌɔɑæɛɒːʃʒθðŋtʃdʒˈˌ]",
+                "",
+                p,
+            ).lower()
 
-                if clean in source_prons:
-                    homophones.append(
-                        candidate
-                    )
-                    break
+            if (
+                clean
+                and clean in source_prons
+            ):
+                homophones.append(
+                    candidate
+                )
+                break
 
     homophones = _unique(
         homophones,
@@ -1884,7 +1900,6 @@ async def _send_cefr(
     message,
     word,
 ):
-    # We do not guess CEFR.
     await message.reply_text(
         f"📊 <b>CEFR Level — {html.escape(word)}</b>\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
@@ -1969,12 +1984,25 @@ async def _send_pronunciation(
         )
         return
 
-    await message.reply_text(
+    youglish = _dictionary_links(
+        word
+    )[2]
+
+    text = (
         _format_pronunciation(
             word,
             dictionary,
-        ),
+        )
+        + "\n\n"
+        f'<a href="{html.escape(youglish, quote=True)}">'
+        "🗣️ Open YouGlish"
+        "</a>"
+    )
+
+    await message.reply_text(
+        text,
         parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
     audio_path = None
@@ -2054,29 +2082,15 @@ async def analysis_command(
 
         # ----------------------------------------------------
         # GET TARGET
+        #
+        # Command arguments have priority.
+        # This prevents /analysis hate from becoming empty
+        # because another helper returns an empty target.
         # ----------------------------------------------------
 
         target = ""
 
-        if _get_target_text:
-            try:
-                target = _get_target_text(
-                    message
-                )
-
-                if inspect.isawaitable(
-                    target
-                ):
-                    target = await target
-
-            except Exception:
-                target = ""
-
-        # Command arguments.
-        if (
-            not target
-            and context.args
-        ):
+        if context and context.args:
             target = " ".join(
                 context.args
             )
@@ -2092,6 +2106,24 @@ async def analysis_command(
                 or ""
             )
 
+        # Other trigger systems such as "تحليل".
+        if (
+            not target
+            and _get_target_text
+        ):
+            try:
+                target = _get_target_text(
+                    message
+                )
+
+                if inspect.isawaitable(
+                    target
+                ):
+                    target = await target
+
+            except Exception:
+                target = ""
+
         word = extract_word(
             target
         )
@@ -2104,11 +2136,7 @@ async def analysis_command(
             return
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # CREATE THE SESSION FIRST.
-        #
-        # We do NOT call _collect_data().
-        # No API is allowed to cancel the analysis.
+        # CREATE SESSION FIRST
         # ----------------------------------------------------
 
         session_id = _create_session(
@@ -2126,19 +2154,14 @@ async def analysis_command(
             return
 
         # ----------------------------------------------------
-        # MAIN ANALYSIS ONLY
-        #
-        # Dictionary is used only for the main card.
-        # Even if it fails, the session remains valid.
+        # MAIN ANALYSIS
         # ----------------------------------------------------
 
         dictionary = None
 
         try:
-            dictionary = (
-                await _dictionary_data(
-                    word
-                )
+            dictionary = await _dictionary_data(
+                word
             )
         except Exception:
             dictionary = None
@@ -2148,30 +2171,30 @@ async def analysis_command(
                 "dictionary"
             ] = dictionary
 
-        main_text = (
-            await _build_main_analysis(
-                word,
-                dictionary,
-            )
+        main_text = await _build_main_analysis(
+            word,
+            dictionary,
+        )
+
+        # Links are INSIDE the same message.
+        main_text += _links_html(
+            word
         )
 
         # ----------------------------------------------------
-        # ALWAYS SHOW THE BUTTONS
+        # ALWAYS SHOW MAIN MESSAGE + BUTTONS
         # ----------------------------------------------------
 
         await message.reply_text(
             main_text,
             parse_mode=ParseMode.HTML,
             reply_markup=_main_keyboard(
-                word,
                 session_id,
             ),
             disable_web_page_preview=True,
         )
 
     except Exception:
-        # Even an unexpected error in main generation
-        # must not leave the user without a session.
         try:
             await message.reply_text(
                 "⚠️ Something went wrong while preparing "
@@ -2205,9 +2228,6 @@ async def analysis_callback(
         pass
 
     data = query.data or ""
-
-    # Expected:
-    # wa:<session_id>:<action>
 
     parts = data.split(
         ":",
@@ -2304,16 +2324,21 @@ async def analysis_callback(
         # ====================================================
 
         if action == "back":
-            await query.message.reply_text(
+            main_text = (
                 _menu_text(
                     "Word Analysis",
                     word,
-                ),
+                )
+                + _links_html(word)
+            )
+
+            await query.message.reply_text(
+                main_text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=_main_keyboard(
-                    word,
                     session_id,
                 ),
+                disable_web_page_preview=True,
             )
             return
 
@@ -2537,9 +2562,6 @@ async def analysis_callback(
             return
 
     except Exception:
-
-        # Failure of one requested feature affects
-        # ONLY that feature.
         try:
             await query.message.reply_text(
                 "ℹ️ No reliable information is available "
