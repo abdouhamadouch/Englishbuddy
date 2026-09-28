@@ -17,11 +17,6 @@
 #
 # Expected configure() interface:
 # configure(ask_groq_func, get_target_text_func, is_approved_func)
-#
-# Expected bot.py handlers:
-# CommandHandler("analysis", analyze.analysis_command)
-# CommandHandler("analys", analyze.analysis_command)
-# CallbackQueryHandler(analyze.analysis_callback, pattern=r"^analysis:")
 
 import asyncio
 import html
@@ -193,8 +188,15 @@ async def _call_approved(update):
     if not _is_approved:
         return True
 
+    user = update.effective_user
+
+    if not user:
+        return False
+
     try:
-        result = _is_approved(update)
+        # bot.py expects:
+        # is_approved(user_id)
+        result = _is_approved(user.id)
 
         if inspect.isawaitable(result):
             result = await result
@@ -226,7 +228,9 @@ async def _get_word_from_update(update, context):
     # First try injected target extractor.
     if _get_target_text:
         try:
-            result = _get_target_text(update, context)
+            # bot.py expects:
+            # get_target_text(message)
+            result = _get_target_text(message)
 
             if inspect.isawaitable(result):
                 result = await result
@@ -267,7 +271,9 @@ async def _get_word_from_update(update, context):
 
         # Try first word only when the replied message is short.
         if len(reply_text.split()) <= 5:
-            first = reply_text.strip(".,!?;:\"'()[]{}")
+            first = reply_text.strip(
+                ".,!?;:\"'()[]{}"
+            )
 
             if _is_word_like(first):
                 return first
@@ -451,7 +457,9 @@ async def _datamuse(word, relation):
         if not isinstance(item, dict):
             continue
 
-        value = str(item.get("word") or "").strip()
+        value = str(
+            item.get("word") or ""
+        ).strip()
 
         if value:
             result.append(value)
@@ -551,14 +559,6 @@ def _wordnet_data(word):
 async def _wiktionary_extract(word):
     """
     Lightweight Wiktionary lookup.
-
-    Heading matching intentionally accepts:
-        ==word==
-        ===word===
-        ==word 1==
-        ===word 1===
-
-    This avoids the old heading-regex problem.
     """
 
     word = _normalize_word(word)
@@ -580,7 +580,10 @@ async def _wiktionary_extract(word):
         )
     )
 
-    data = await _http_json(url, timeout=10)
+    data = await _http_json(
+        url,
+        timeout=10,
+    )
 
     if not isinstance(data, dict):
         return ""
@@ -730,6 +733,7 @@ async def _groq(prompt, max_tokens=500):
 
         bad_responses = {
             "empty ai response",
+            "❌ empty ai response.",
             "error",
             "none",
             "null",
@@ -751,9 +755,6 @@ async def _groq(prompt, max_tokens=500):
 async def _groq_json(prompt, max_tokens=700):
     """
     Ask Groq for JSON and parse it safely.
-
-    The function accepts either raw JSON or JSON enclosed
-    in a code fence.
     """
 
     raw = await _groq(
@@ -786,7 +787,6 @@ async def _groq_json(prompt, max_tokens=700):
         return json.loads(raw)
 
     except Exception:
-        # Try extracting the first JSON object.
         match = re.search(
             r"\{.*\}",
             raw,
@@ -797,7 +797,9 @@ async def _groq_json(prompt, max_tokens=700):
             return None
 
         try:
-            return json.loads(match.group(0))
+            return json.loads(
+                match.group(0)
+            )
 
         except Exception:
             return None
@@ -813,8 +815,15 @@ def _dictionary_summary(dictionary):
 
     lines = []
 
-    for meaning in dictionary.get("meanings", [])[:5]:
-        pos = meaning.get("part_of_speech", "").strip()
+    for meaning in dictionary.get(
+        "meanings",
+        [],
+    )[:5]:
+
+        pos = meaning.get(
+            "part_of_speech",
+            "",
+        ).strip()
 
         for definition in meaning.get(
             "definitions",
@@ -839,14 +848,21 @@ def _dictionary_summary(dictionary):
     return "\n".join(lines[:8])
 
 
-async def _build_main_analysis(word, data):
-    dictionary = data.get("dictionary") or {}
+async def _build_main_analysis(
+    word,
+    data,
+):
+    dictionary = data.get(
+        "dictionary"
+    ) or {}
 
     dictionary_text = _dictionary_summary(
         dictionary
     )
 
-    wiki = data.get("wiktionary") or ""
+    wiki = data.get(
+        "wiktionary"
+    ) or ""
 
     wiki_excerpt = wiki[:5000]
 
@@ -885,12 +901,9 @@ Use plain text.
     )
 
     if result:
-        return result
+        return _html(result)
 
-    # --------------------------------------------------------
     # Deterministic fallback
-    # --------------------------------------------------------
-
     lines = []
 
     if dictionary.get("meanings"):
@@ -956,6 +969,7 @@ Use plain text.
                 "definitions",
                 [],
             ):
+
                 example = item.get(
                     "example",
                     "",
@@ -999,7 +1013,10 @@ def _cleanup_sessions():
     ):
         if (
             current
-            - session.get("created_at", current)
+            - session.get(
+                "created_at",
+                current,
+            )
             > SESSION_TTL
         ):
             expired.append(session_id)
@@ -1010,7 +1027,6 @@ def _cleanup_sessions():
             None,
         )
 
-    # Safety limit.
     if len(_sessions) > MAX_SESSION_COUNT:
         ordered = sorted(
             _sessions.items(),
@@ -1020,7 +1036,10 @@ def _cleanup_sessions():
             ),
         )
 
-        excess = len(_sessions) - MAX_SESSION_COUNT
+        excess = (
+            len(_sessions)
+            - MAX_SESSION_COUNT
+        )
 
         for session_id, _ in ordered[:excess]:
             _sessions.pop(
@@ -1054,7 +1073,10 @@ def _create_session(
     for old_id, old_session in list(
         _sessions.items()
     ):
-        if old_session.get("user_id") == int(user_id):
+        if old_session.get(
+            "user_id"
+        ) == int(user_id):
+
             _sessions.pop(
                 old_id,
                 None,
@@ -1069,14 +1091,19 @@ def _get_session(session_id):
     if not session_id:
         return None
 
-    session = _sessions.get(session_id)
+    session = _sessions.get(
+        session_id
+    )
 
     if not session:
         return None
 
     if (
         _now()
-        - session.get("created_at", 0)
+        - session.get(
+            "created_at",
+            0,
+        )
         > SESSION_TTL
     ):
         _sessions.pop(
@@ -1093,7 +1120,10 @@ def _get_session(session_id):
 # CALLBACK DATA
 # ============================================================
 
-def _callback(session_id, action):
+def _callback(
+    session_id,
+    action,
+):
     return (
         f"analysis:{session_id}:{action}"
     )
@@ -1453,10 +1483,13 @@ def _pronunciation_keyboard(session_id):
 
 
 # ============================================================
-# FINAL RESULT FORMATTERS
+# ARABIC GLOSSES
 # ============================================================
 
-async def _arabic_glosses(word, words):
+async def _arabic_glosses(
+    word,
+    words,
+):
     words = _unique(words)[:15]
 
     if not words:
@@ -1491,7 +1524,9 @@ Do not invent unusual meanings.
     result = {}
 
     if isinstance(data, dict):
-        items = data.get("items")
+        items = data.get(
+            "items"
+        )
 
         if isinstance(items, list):
             for item in items:
@@ -1514,7 +1549,10 @@ Do not invent unusual meanings.
     return result
 
 
-def _list_with_arabic(words, arabic_map):
+def _list_with_arabic(
+    words,
+    arabic_map,
+):
     lines = []
 
     for word in _unique(words)[:15]:
@@ -1536,7 +1574,14 @@ def _list_with_arabic(words, arabic_map):
     return lines
 
 
-async def _synonyms_result(word, data):
+# ============================================================
+# SYNONYMS
+# ============================================================
+
+async def _synonyms_result(
+    word,
+    data,
+):
     datamuse = data.get(
         "datamuse_synonyms",
         [],
@@ -1608,7 +1653,14 @@ async def _synonyms_result(word, data):
     )
 
 
-async def _antonyms_result(word, data):
+# ============================================================
+# ANTONYMS
+# ============================================================
+
+async def _antonyms_result(
+    word,
+    data,
+):
     datamuse = data.get(
         "datamuse_antonyms",
         [],
@@ -1681,7 +1733,7 @@ async def _antonyms_result(word, data):
 
 
 # ============================================================
-# FINAL GROQ SECTIONS
+# GENERIC AI SECTIONS
 # ============================================================
 
 async def _ai_section(
@@ -1745,7 +1797,10 @@ Rules:
 # MEANING RESULTS
 # ============================================================
 
-async def _meaning_result(word, data):
+async def _meaning_result(
+    word,
+    data,
+):
     dictionary = data.get(
         "dictionary"
     ) or {}
@@ -1810,7 +1865,10 @@ async def _meaning_result(word, data):
 # RELATIONS
 # ============================================================
 
-async def _homophones_result(word, data):
+async def _homophones_result(
+    word,
+    data,
+):
     words = data.get(
         "sound_alikes",
         [],
@@ -1847,7 +1905,10 @@ async def _homophones_result(word, data):
     )
 
 
-async def _spelling_result(word, data):
+async def _spelling_result(
+    word,
+    data,
+):
     words = data.get(
         "similar_spelling",
         [],
@@ -1884,18 +1945,16 @@ async def _spelling_result(word, data):
     )
 
 
-async def _family_result(word, data):
-    """
-    Word Family is generated from reliable dictionary /
-    WordNet information and then organized by Groq.
-    """
+# ============================================================
+# WORD FAMILY
+# ============================================================
 
+async def _family_result(
+    word,
+    data,
+):
     wordnet = data.get(
         "wordnet"
-    ) or {}
-
-    dictionary = data.get(
-        "dictionary"
     ) or {}
 
     source_words = _unique(
@@ -2012,7 +2071,10 @@ of the same word family.
 # WORD LEVELS
 # ============================================================
 
-async def _levels_result(word, data):
+async def _levels_result(
+    word,
+    data,
+):
     dictionary = data.get(
         "dictionary"
     ) or {}
@@ -2140,10 +2202,14 @@ async def _pronunciation_result(
     texts = _unique(texts)
 
     if variant == "us":
-        prompt_variant = "American English pronunciation"
+        prompt_variant = (
+            "American English pronunciation"
+        )
 
     elif variant == "uk":
-        prompt_variant = "British English pronunciation"
+        prompt_variant = (
+            "British English pronunciation"
+        )
 
     else:
         prompt_variant = (
@@ -2199,13 +2265,19 @@ Use "unknown" when reliable IPA is unavailable.
             result.get("note") or ""
         ).strip()
 
-        if variant in {"both", "us"} and us.lower() != "unknown":
+        if (
+            variant in {"both", "us"}
+            and us.lower() != "unknown"
+        ):
             if us:
                 lines.append(
                     f"🇺🇸 <b>US:</b> {_html(us)}"
                 )
 
-        if variant in {"both", "uk"} and uk.lower() != "unknown":
+        if (
+            variant in {"both", "uk"}
+            and uk.lower() != "unknown"
+        ):
             if uk:
                 lines.append(
                     f"🇬🇧 <b>UK:</b> {_html(uk)}"
@@ -2242,10 +2314,13 @@ Use "unknown" when reliable IPA is unavailable.
 
 
 # ============================================================
-# FINAL GENERIC SECTIONS
+# GENERIC FINAL SECTIONS
 # ============================================================
 
-async def _usage_result(word, data):
+async def _usage_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "📝 Usage",
@@ -2260,7 +2335,10 @@ only when relevant.
     )
 
 
-async def _collocations_result(word, data):
+async def _collocations_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🔗 Collocations",
@@ -2275,7 +2353,10 @@ Do not invent unusual combinations.
     )
 
 
-async def _register_result(word, data):
+async def _register_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🎚 Register",
@@ -2290,7 +2371,10 @@ Give Arabic clarification.
     )
 
 
-async def _root_result(word, data):
+async def _root_result(
+    word,
+    data,
+):
     wiki = data.get(
         "wiktionary"
     ) or ""
@@ -2329,7 +2413,10 @@ Rules:
     )
 
 
-async def _formation_result(word, data):
+async def _formation_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🧩 Word Formation",
@@ -2344,7 +2431,10 @@ Give Arabic explanation.
     )
 
 
-async def _semantic_result(word, data):
+async def _semantic_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🧠 Semantic Analysis",
@@ -2359,7 +2449,10 @@ Arabic clarification.
     )
 
 
-async def _learner_notes_result(word, data):
+async def _learner_notes_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "⚠️ Learner Notes",
@@ -2375,7 +2468,10 @@ Give Arabic clarification.
     )
 
 
-async def _idioms_result(word, data):
+async def _idioms_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "💬 Idioms",
@@ -2390,7 +2486,10 @@ If there are no reliable idioms, say so.
     )
 
 
-async def _fixed_phrases_result(word, data):
+async def _fixed_phrases_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🧱 Fixed Phrases",
@@ -2404,14 +2503,20 @@ Do not include ordinary random combinations.
     )
 
 
-async def _expression_collocations_result(word, data):
+async def _expression_collocations_result(
+    word,
+    data,
+):
     return await _collocations_result(
         word,
         data,
     )
 
 
-async def _slang_result(word, data):
+async def _slang_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🗣️ Slang",
@@ -2425,7 +2530,10 @@ Give Arabic meanings. If there is no reliable slang use, say so.
     )
 
 
-async def _phrasal_result(word, data):
+async def _phrasal_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🔀 Phrasal Verbs",
@@ -2440,7 +2548,10 @@ Do not invent phrasal verbs.
     )
 
 
-async def _informal_result(word, data):
+async def _informal_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "💬 Informal Uses",
@@ -2454,7 +2565,10 @@ short examples. Do not label normal English as slang.
     )
 
 
-async def _stress_result(word, data):
+async def _stress_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🎯 Stress",
@@ -2468,7 +2582,10 @@ when reliable. Include a short Arabic explanation.
     )
 
 
-async def _pron_tips_result(word, data):
+async def _pron_tips_result(
+    word,
+    data,
+):
     return await _ai_section(
         word,
         "🗣️ Pronunciation Tips",
@@ -2649,7 +2766,10 @@ async def _final_result(
 # ANALYSIS COMMAND
 # ============================================================
 
-async def analysis_command(update, context):
+async def analysis_command(
+    update,
+    context,
+):
     if not await _call_approved(update):
         return
 
@@ -2669,7 +2789,6 @@ async def analysis_command(update, context):
 
     word = _safe_word(word)
 
-    # Avoid accidental analysis of an entire sentence.
     if len(word.split()) > 5:
         await update.effective_message.reply_text(
             "🔎 Please use a word or a short expression "
@@ -2733,23 +2852,20 @@ async def analysis_callback(
     if not query:
         return
 
-    data = query.data or ""
+    callback_data = query.data or ""
 
-    # --------------------------------------------------------
     # IMPORTANT:
-    # Only our exact analysis callback namespace.
+    # Exact callback namespace:
     #
     # analysis:{session_id}:{action}
     #
     # No "rw", no generic callback prefix.
-    # --------------------------------------------------------
-
-    if not data.startswith(
+    if not callback_data.startswith(
         "analysis:"
     ):
         return
 
-    parts = data.split(
+    parts = callback_data.split(
         ":",
         2,
     )
@@ -2782,9 +2898,9 @@ async def analysis_callback(
         await query.answer()
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # SESSION ISOLATION
-    # --------------------------------------------------------
+    # ========================================================
 
     if int(user.id) != int(
         session.get("user_id")
@@ -2796,19 +2912,14 @@ async def analysis_callback(
 
         return
 
-    # --------------------------------------------------------
-    # Prevent callback reuse after a final result
-    # while still allowing normal navigation.
-    # --------------------------------------------------------
-
     try:
         await query.answer()
     except Exception:
         pass
 
-    # --------------------------------------------------------
+    # ========================================================
     # MAIN SECTION -> EDIT SAME MESSAGE
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "meaning":
         await query.edit_message_reply_markup(
@@ -2864,9 +2975,9 @@ async def analysis_callback(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # BACK -> MAIN BUTTONS
-    # --------------------------------------------------------
+    # ========================================================
 
     if action == "back":
         await query.edit_message_reply_markup(
@@ -2877,12 +2988,9 @@ async def analysis_callback(
 
         return
 
-    # --------------------------------------------------------
-    # FINAL ACTION
-    #
-    # Only here do we send a NEW message.
-    # Then original message goes back to main buttons.
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL ACTIONS
+    # ========================================================
 
     final_actions = {
         "meaning_meanings",
@@ -2928,10 +3036,7 @@ async def analysis_callback(
         "data"
     ) or {}
 
-    # --------------------------------------------------------
     # Build final result exactly once.
-    # --------------------------------------------------------
-
     result = await _final_result(
         action,
         word,
@@ -2945,9 +3050,9 @@ async def analysis_callback(
             f"{_html(NO_INFO)}"
         )
 
-    # --------------------------------------------------------
-    # Send ONLY the final result as a new message.
-    # --------------------------------------------------------
+    # ========================================================
+    # Send ONLY the final result as a NEW message.
+    # ========================================================
 
     try:
         await query.message.reply_text(
@@ -2957,7 +3062,6 @@ async def analysis_callback(
         )
 
     except Exception:
-        # If HTML has an unexpected issue, send safe plain text.
         try:
             plain = re.sub(
                 r"<[^>]+>",
@@ -2972,9 +3076,9 @@ async def analysis_callback(
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # Immediately restore original message buttons.
-    # --------------------------------------------------------
+    # ========================================================
+    # Restore original message buttons.
+    # ========================================================
 
     try:
         await query.edit_message_reply_markup(
