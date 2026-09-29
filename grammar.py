@@ -79,28 +79,24 @@ def _clean_input(text: str) -> str:
 # CLEAN AI OUTPUT
 # ============================================================
 
-def _clean_ai_output(text: str) -> str:
+def _clean_ai_output(text: str):
 
     if not text:
         return ""
 
     text = str(text).strip()
 
-    # Known empty-response messages from bot.py
     empty_markers = {
-        "❌ Empty AI response.",
         "❌ empty ai response.",
+        "❌ empty ai response",
         "empty ai response.",
         "empty ai response",
     }
 
-    if text.lower() in {
-        item.lower()
-        for item in empty_markers
-    }:
+    if text.lower() in empty_markers:
         return ""
 
-    # Remove code fences
+    # Remove code fences.
     text = re.sub(
         r"```(?:html|HTML)?",
         "",
@@ -109,7 +105,7 @@ def _clean_ai_output(text: str) -> str:
 
     text = text.replace("```", "")
 
-    # Remove Markdown headings
+    # Remove Markdown headings.
     text = re.sub(
         r"^\s*#{1,6}\s*",
         "",
@@ -117,19 +113,19 @@ def _clean_ai_output(text: str) -> str:
         flags=re.MULTILINE,
     )
 
-    # Markdown bullets -> Telegram bullets
+    # Convert Markdown bullets.
     text = re.sub(
         r"(?m)^\s*[-*+]\s+",
         "• ",
         text,
     )
 
-    # Remove Markdown decoration
+    # Remove Markdown decoration.
     text = text.replace("**", "")
     text = text.replace("__", "")
     text = text.replace("*", "")
 
-    # Normalize strong -> b
+    # Normalize strong.
     text = re.sub(
         r"<\s*strong\s*>",
         "<b>",
@@ -144,7 +140,7 @@ def _clean_ai_output(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
-    # Allowed Telegram HTML
+    # Allowed Telegram HTML tags.
     allowed_tags = {
         "b",
         "i",
@@ -180,7 +176,7 @@ def _clean_ai_output(text: str) -> str:
         text,
     )
 
-    # Remove excessive blank lines
+    # Remove excessive blank lines.
     text = re.sub(
         r"\n[ \t]*\n[ \t]*\n+",
         "\n\n",
@@ -190,7 +186,7 @@ def _clean_ai_output(text: str) -> str:
     return text.strip()
 
 
-def _remove_all_html(text: str) -> str:
+def _remove_all_html(text: str):
 
     if not text:
         return ""
@@ -213,22 +209,18 @@ async def _call_ai(prompt: str):
         return None
 
     try:
-        # The normal FixMyEnglish ask_groq interface is:
-        #
-        # ask_groq(prompt, max_tokens=1200, system_prompt=None)
-        #
-        # We deliberately use keyword arguments here so this remains
-        # compatible with the current bot.py implementation.
 
         result = await _ai_function(
             prompt,
             max_tokens=GRAMMAR_MAX_TOKENS,
             system_prompt=(
                 "You are FixMyEnglish Grammar Teacher. "
-                "Teach English grammar clearly and accurately. "
+                "Teach English grammar accurately and clearly. "
                 "Use simple English suitable for A2-B1 learners. "
+                "English is the main language. "
                 "Use Arabic only for important translations "
-                "and short necessary clarifications."
+                "and short necessary clarifications. "
+                "Give complete and useful examples."
             ),
         )
 
@@ -236,16 +228,15 @@ async def _call_ai(prompt: str):
 
     except TypeError as e:
 
-        # Compatibility fallback in case the injected function
-        # only accepts one argument.
-
         print(
             f"[GRAMMAR] AI function does not accept "
             f"extended arguments: {e}"
         )
 
         try:
+
             result = await _ai_function(prompt)
+
             return result
 
         except Exception as second_error:
@@ -286,15 +277,16 @@ async def _ask_ai_with_retry(prompt: str):
                 current_prompt = f"""
 {prompt}
 
-IMPORTANT:
+RETRY INSTRUCTION:
+
 This is retry attempt {attempt}.
 
-Generate the complete answer again from the beginning.
+The previous attempt did not produce a usable answer.
 
-The previous attempt did not return a usable answer.
+Generate the complete grammar lesson again from the beginning.
 
-Make the response complete and concise enough to finish
-within the available response length.
+Make it complete, accurate, organized, and concise enough
+to finish completely.
 
 Do not mention this retry instruction.
 """
@@ -312,7 +304,6 @@ Do not mention this retry instruction.
 
             result = str(result).strip()
 
-            # Detect bot.py's empty-response message.
             if (
                 not result
                 or result.lower()
@@ -365,72 +356,63 @@ Do not mention this retry instruction.
 # GRAMMAR PROMPT
 # ============================================================
 
-def build_grammar_prompt(text: str) -> str:
+def build_grammar_prompt(text: str):
 
     return f"""
 You are the Grammar Teacher inside FixMyEnglish.
 
-Analyze this user input:
+Analyze this input:
 
 "{text}"
 
-Teach the relevant grammar clearly and accurately.
+Your job is to TEACH the relevant grammar clearly,
+accurately, and practically.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LANGUAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The main explanation must be in simple English suitable
-for an A2-B1 learner.
+• English is the main language.
 
-Do NOT write the whole lesson in Arabic.
+• Use simple, natural English suitable for an A2-B1 learner.
 
-Use Arabic only for:
+• Do NOT write the whole lesson in Arabic.
 
-• important grammar-rule translations
-• Arabic translations of English examples
-• short clarifications when they are genuinely useful
+• Use Arabic mainly for:
+  - translating the grammar rule when useful
+  - translating English examples
+  - short important clarifications
 
-English must remain the main language.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TEACH THE GRAMMAR
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Do not merely name the grammar rule.
-
-Explain:
-
-• what the grammar is
-• how the structure works
-• when it is used
-• why it is used
-• useful examples
-• important differences when relevant
-• genuine common mistakes when relevant
-
-If the input is already correct, do not invent an error.
-Explain the grammar that makes it correct.
-
-If the input is incorrect, explain the real grammatical
-problem and give the corrected form.
-
-If the input is the name of a grammar rule, teach that rule
-directly.
+• Do not translate every explanation sentence.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TITLE FORMAT
+ACCURACY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Each main section title must use this simple rectangular frame:
+• Explain the real grammar involved.
 
-┌──────────────────────────────┐
-│   <b>① GRAMMAR POINT</b>     │
-└──────────────────────────────┘
+• Do not invent mistakes.
 
-Use a simple, slightly rough rectangular border.
+• If the sentence is correct, say that it is correct
+  and explain the grammar behind it.
 
-Do NOT use complicated decorative borders.
+• If it is incorrect, identify the real error,
+  correct it, and explain why.
+
+• If the user gives the name of a grammar rule,
+  teach that rule directly.
+
+• Do not discuss unrelated grammar.
+
+• Prefer accurate, useful explanations over long explanations.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VISUAL STYLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Do NOT use rectangular frames or borders.
+
+Do NOT use complicated decorative symbols.
 
 Do NOT use:
 
@@ -439,64 +421,129 @@ Do NOT use:
 ☆
 ⟦ ⟧
 ╔ ╗ ╚ ╝
-or decorative stars.
+┌ ┐ └ ┘
 
-Only the title gets the frame.
+Make the lesson visually organized and lively using
+simple colored emojis and numbered sections.
+
+Use different functional emojis such as:
+
+🟦
+🟩
+🟨
+🟧
+🟥
+🔵
+🟢
+🟡
+🟠
+🔴
+📌
+💡
+⚠️
+✅
+❌
+
+Do not overuse them.
+
+The emojis should organize the lesson, not decorate every line.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION ORDER
+SECTION ORGANIZATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use only the sections that are useful.
+Use only the sections that are genuinely useful.
 
-Possible sections:
+Possible structure:
 
-① GRAMMAR POINT
-② WHAT IS IT?
-③ STRUCTURE
-④ WHEN DO WE USE IT?
-⑤ EXAMPLES
-⑥ COMPARE
-⑦ COMMON MISTAKES
-⑧ IN THIS SENTENCE
-⑨ QUICK TIP
+🟦 <b>① GRAMMAR POINT</b>
 
-Use the numbered symbols ① ② ③ etc.
+🟢 <b>② WHAT IS IT?</b>
 
-For points and examples use:
+🟨 <b>③ STRUCTURE</b>
 
-❶ ❷ ❸ ❹ ❺ ❻
+🟠 <b>④ WHEN DO WE USE IT?</b>
+
+🔵 <b>⑤ EXAMPLES</b>
+
+🟣 <b>⑥ COMPARE</b>
+
+⚠️ <b>⑦ COMMON MISTAKES</b>
+
+📌 <b>⑧ IN THIS SENTENCE</b>
+
+💡 <b>⑨ QUICK TIP</b>
 
 Do not create empty sections.
 
+Do not force every section into every answer.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-EXPLANATION
+GRAMMAR POINT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Explain the grammar in clear, simple English.
+Start by clearly identifying the grammar.
 
-For example:
+Example:
 
-The Second Conditional is used for imaginary,
-unreal, or unlikely situations.
+🟦 <b>① GRAMMAR POINT</b>
 
-Arabic may be added briefly:
+<b>Second Conditional</b>
+
+The Second Conditional is used to talk about
+imaginary, unreal, or unlikely situations.
+
+Arabic translation may be added briefly:
 
 يُستخدم للحديث عن مواقف افتراضية أو غير حقيقية.
 
-Do not translate the whole explanation.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT IS IT?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Explain the idea in simple English.
+
+Use numbered points when useful:
+
+❶ ...
+❷ ...
+❸ ...
+
+Arabic should only be used for important translations
+or short clarifications.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Show important structures clearly.
+Show the grammar structure clearly.
 
 Example:
 
+🟨 <b>③ STRUCTURE</b>
+
 ❶ <b>If + past simple, would + base verb</b>
 
-Then explain the structure simply.
+Explain what each part means.
+
+Highlight important grammar forms with <b>...</b>.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHEN DO WE USE IT?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Explain the main uses.
+
+For example:
+
+❶ <b>Imaginary situations</b>
+We imagine a situation that is not true now.
+
+❷ <b>Unlikely situations</b>
+We talk about something possible but not very likely.
+
+Use Arabic only when a translation or short clarification
+is genuinely useful.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLES
@@ -504,14 +551,16 @@ EXAMPLES
 
 Examples are very important.
 
-Give at least 3 useful examples for a grammar rule.
+Give at least 3 useful examples when teaching a grammar rule.
 
 Give more when there are several important uses and
-the extra examples are genuinely useful.
+the extra examples are genuinely helpful.
 
 Every example must be complete.
 
 Use:
+
+🔵 <b>⑤ EXAMPLES</b>
 
 ❶ <b>If I had more time, I would study more.</b>
 لو كان لدي وقت أكثر، لدرست أكثر.
@@ -524,36 +573,67 @@ Use:
 
 Rules:
 
-• English example must be bold.
-• Arabic translation must immediately follow it.
+• English examples must be bold.
+
 • Every English example must have an Arabic translation.
-• Do not translate every explanation sentence.
-• Do not start an example that cannot be completed.
+
+• The Arabic translation should immediately follow
+  the English example.
+
+• Do not translate the whole explanation.
+
+• Do not leave an example incomplete.
+
+• Use natural English examples, not artificial sentences.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMPARISONS
+COMPARISON
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use a comparison only when learners commonly confuse
-the target grammar with another structure.
+Use this only when the learner may confuse the grammar
+with another structure.
 
-Keep it concise.
+For example:
 
-Explain the real difference clearly.
+🟣 <b>⑥ COMPARE</b>
+
+❶ <b>First Conditional</b>
+Used for real or possible future situations.
+
+❷ <b>Second Conditional</b>
+Used for imaginary or unlikely situations.
+
+Then give short examples if useful.
+
+Do not make unnecessary comparisons.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMMON MISTAKES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this section ONLY if there are genuine common mistakes.
+Use this section ONLY when there are genuine common mistakes.
+
+⚠️ <b>⑦ COMMON MISTAKES</b>
 
 Show:
 
-❶ Incorrect form
-❷ Correct form
-❸ Why it is wrong
+❶ ❌ Incorrect
+❷ ✅ Correct
+❸ Explain why.
 
-Use Arabic only for a short useful clarification.
+Example:
+
+❶ ❌ <b>If I will have money, I would travel.</b>
+
+❷ ✅ <b>If I had money, I would travel.</b>
+
+❸ <b>Why?</b>
+In the Second Conditional, we normally use
+past simple after <b>if</b>, not <b>will</b>.
+
+Arabic can be used for the important clarification:
+
+في Second Conditional نستخدم past simple بعد if.
 
 Do not invent common mistakes.
 
@@ -561,10 +641,20 @@ Do not invent common mistakes.
 IN THIS SENTENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-If the user gives a sentence, explain how the grammar
-works specifically inside that sentence.
+If the user provides a sentence, explain the grammar
+inside that exact sentence.
 
-Focus on the actual sentence.
+Focus on the words and structures actually used.
+
+For example:
+
+📌 <b>⑧ IN THIS SENTENCE</b>
+
+❶ <b>had</b> = past simple form.
+
+❷ <b>would study</b> = hypothetical result.
+
+❸ The sentence describes an unreal situation.
 
 Do not discuss unrelated grammar.
 
@@ -572,7 +662,15 @@ Do not discuss unrelated grammar.
 QUICK TIP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this only when there is a genuinely useful memory tip.
+Use this only when a genuinely useful memory tip exists.
+
+Example:
+
+💡 <b>⑨ QUICK TIP</b>
+
+Remember:
+
+<b>If + past simple → would + base verb</b>
 
 Keep it short.
 
@@ -582,41 +680,65 @@ FORMATTING
 
 Use Telegram HTML.
 
-Use <b> for important words, structures, corrections,
-examples and titles.
+Use <b>...</b> for:
+
+• important grammar terms
+• structures
+• corrections
+• English examples
+• section titles
 
 Do not use Markdown bold.
 
 Do not use Markdown headings.
 
-Do not use decorative Markdown stars.
+Do not use decorative stars.
 
-Use this separator:
+Do not use rectangular frames.
+
+Use colored emojis mainly for section organization.
+
+Use numbered points such as:
+
+❶ ❷ ❸ ❹ ❺
+
+Keep the lesson visually clean and easy to read on a phone.
+
+Use this separator between major sections when useful:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use numbered organization, not decorative clutter.
-
-Do not fill the lesson with emojis.
+Do not put a separator after every small point.
 
 Do not use unnecessary tables.
 
-Keep the lesson easy to read on a phone.
+Do not repeat the same explanation.
 
-Do not repeat information.
+Do not fill the answer with emojis.
 
-The answer must be complete.
+The lesson should feel lively but still like a serious
+and accurate English grammar lesson.
 
-Never leave:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMPLETENESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• an unfinished sentence
-• an unfinished example
-• an unfinished Arabic translation
-• an unfinished section
-• an unfinished HTML tag
+Every sentence must be complete.
 
-If the lesson becomes too long, shorten explanations and
-remove repetition before removing useful examples.
+Every example must be complete.
+
+Every Arabic translation must be complete.
+
+Every section must be complete.
+
+Every HTML tag must be complete.
+
+If the answer becomes too long:
+
+1. Remove repetition.
+2. Shorten explanations.
+3. Keep the important examples.
+4. Do not leave anything unfinished.
 
 End naturally with a complete sentence.
 """
