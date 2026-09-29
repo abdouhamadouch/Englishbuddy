@@ -32,18 +32,23 @@ SESSION_TIMEOUT = 20 * 60
 US_VOICE = "en-US-AriaNeural"
 UK_VOICE = "en-GB-SoniaNeural"
 
-# Slow pronunciation
+# Slow, clear pronunciation
 TTS_RATE = "-30%"
 
 MAX_INPUT_LENGTH = 500
 MAX_AI_ATTEMPTS = 4
-MAX_SOUNDS = 5
+
+MAX_SOUNDS = 4
 MAX_EXAMPLES_PER_SOUND = 4
 
-
-# Injected from bot.py
 _ai_function = None
 
+sessions = {}
+
+
+# ============================================================
+# AI INJECTION
+# ============================================================
 
 def set_ai_function(function):
     global _ai_function
@@ -51,11 +56,8 @@ def set_ai_function(function):
 
 
 # ============================================================
-# SESSIONS
+# SESSION
 # ============================================================
-
-sessions = {}
-
 
 def _cleanup_sessions():
     now = time.time()
@@ -73,9 +75,6 @@ def _cleanup_sessions():
 
 
 def _save_session(user_id, data):
-    """
-    Save session without resetting its original creation time.
-    """
     if "created_at" not in data:
         data["created_at"] = time.time()
 
@@ -90,9 +89,7 @@ def _get_session(user_id):
     if not data:
         return None
 
-    created_at = data.get("created_at", 0)
-
-    if time.time() - created_at > SESSION_TIMEOUT:
+    if time.time() - data.get("created_at", 0) > SESSION_TIMEOUT:
         sessions.pop(user_id, None)
         return None
 
@@ -119,35 +116,35 @@ def _extract_text(update: Update):
         parts = text.split(maxsplit=1)
 
         if len(parts) > 1:
-            argument = parts[1].strip()
+            value = parts[1].strip()
 
-            if argument:
-                return argument[:MAX_INPUT_LENGTH]
+            if value:
+                return value[:MAX_INPUT_LENGTH]
 
     reply = message.reply_to_message
 
     if reply:
-        reply_text = (
+        value = (
             reply.text
             or reply.caption
             or ""
         ).strip()
 
-        if reply_text:
-            return reply_text[:MAX_INPUT_LENGTH]
+        if value:
+            return value[:MAX_INPUT_LENGTH]
 
     return None
 
 
 # ============================================================
-# JSON PARSING
+# JSON
 # ============================================================
 
 def _extract_json(raw):
     if not raw:
         return None
 
-    text = raw.strip()
+    text = str(raw).strip()
 
     text = re.sub(
         r"^```(?:json)?\s*",
@@ -171,10 +168,10 @@ def _extract_json(raw):
     end = text.rfind("}")
 
     if start != -1 and end > start:
-        candidate = text[start:end + 1]
-
         try:
-            return json.loads(candidate)
+            return json.loads(
+                text[start:end + 1]
+            )
         except Exception:
             pass
 
@@ -182,7 +179,7 @@ def _extract_json(raw):
 
 
 # ============================================================
-# AI CALL
+# AI
 # ============================================================
 
 async def _call_ai(prompt):
@@ -193,7 +190,7 @@ async def _call_ai(prompt):
         try:
             result = await _ai_function(
                 prompt,
-                max_tokens=1800,
+                max_tokens=1500,
             )
         except TypeError:
             result = await _ai_function(prompt)
@@ -207,126 +204,90 @@ async def _call_ai(prompt):
         return None
 
 
-# ============================================================
-# AI SOUND ANALYSIS
-# ============================================================
-
 async def _analyze_with_ai(text, accent):
-    """
-    Creates a genuinely accent-specific sound analysis.
-
-    The AI must identify:
-    - important sounds
-    - IPA
-    - sound name
-    - common spellings
-    - exact letters producing the sound in the target
-    - position
-    - four example words
-    - TTS-friendly sound hint
-    """
-
     prompt = f"""
 You are an expert English pronunciation teacher.
 
-Analyze this English target:
+Analyze this English word or short phrase:
 
-{json.dumps(text, ensure_ascii=False)}
+{text}
 
-The requested pronunciation accent is:
-
-{accent}
-
-IMPORTANT:
-This must be a genuinely {accent} pronunciation analysis.
-Do NOT merely change the accent label.
-The IPA, sounds, target letters, and examples must match {accent} pronunciation.
+Accent: {accent}
 
 Return ONLY valid JSON.
+No Markdown.
+No explanation outside JSON.
 
-Required JSON structure:
+The analysis must be specifically for {accent} pronunciation.
+
+Use this exact structure:
 
 {{
-  "target": "the target word or phrase",
+  "target": "...",
   "accent": "{accent}",
-  "full_ipa": "accent-specific IPA",
+  "full_ipa": "...",
   "sounds": [
     {{
-      "sound": "/IPA/",
-      "name": "clear English name of the sound",
-      "common_spellings": [
-        "common spelling pattern 1",
-        "common spelling pattern 2"
-      ],
-      "position": "beginning / middle / end",
-      "target_part": "the exact letter or letters in the target producing this sound",
-      "audio_hint": "very short TTS-friendly representation of this sound",
+      "sound": "...",
+      "name": "...",
+      "spellings": ["...", "..."],
+      "position": "...",
+      "target_part": "...",
+      "audio_hint": "...",
       "examples": [
-        {{
-          "word": "example 1",
-          "ipa": "/IPA/"
-        }},
-        {{
-          "word": "example 2",
-          "ipa": "/IPA/"
-        }},
-        {{
-          "word": "example 3",
-          "ipa": "/IPA/"
-        }},
-        {{
-          "word": "example 4",
-          "ipa": "/IPA/"
-        }}
+        {{"word": "...", "ipa": "..."}},
+        {{"word": "...", "ipa": "..."}},
+        {{"word": "...", "ipa": "..."}},
+        {{"word": "...", "ipa": "..."}}
       ]
     }}
-  ],
-  "training_words": [
-    "optional useful word",
-    "optional useful word"
   ]
 }}
 
-RULES:
+Rules:
 
-1. Focus on the important vowel/sound features of the target.
-2. Analyze each important sound separately.
-3. If there are several important sounds, create separate objects.
-4. Do not combine different sounds into one object.
-5. common_spellings means spelling patterns that can produce this sound in English.
-6. target_part means the exact letters in THIS target that produce the sound.
-7. Do not invent letters that are not actually responsible for the sound.
-8. position must describe where the sound occurs in the target.
-9. Give EXACTLY four useful example words for every sound.
-10. Every example must actually contain the same sound in {accent} pronunciation.
-11. The IPA of every example must match {accent}.
-12. Do not use the target itself as an example.
-13. Keep examples common and useful for an English learner.
-14. Do not invent pronunciation differences between American and British English.
-15. If American and British pronunciation are genuinely different, reflect that difference accurately.
-16. audio_hint is ONLY for the text-to-speech engine.
-17. audio_hint must NOT contain IPA symbols.
-18. audio_hint must be very short, preferably one syllable.
-19. Examples:
-    /ɪ/ -> "ih"
-    /iː/ -> "ee"
-    /ɛ/ -> "eh"
-    /æ/ -> "a"
-    /ʌ/ -> "uh"
-    /ə/ -> "uh"
-    /ɑː/ -> "ah"
-    /ɔː/ -> "aw"
-    /ʊ/ -> "oo"
-    /uː/ -> "oo"
-    /eɪ/ -> "ay"
-    /aɪ/ -> "eye"
-    /ɔɪ/ -> "oy"
-    /aʊ/ -> "ow"
-    /oʊ/ -> "oh"
-20. Do not put explanations outside the JSON.
+- Identify the important vowel sounds in the target.
+- Analyze every important sound separately.
+- Maximum 4 sounds.
+- For every sound give exactly 4 useful example words.
+- Every example must contain the SAME sound.
+- Give IPA for every example in the selected accent.
+- "spellings" means common English letter patterns that can produce this sound.
+- "target_part" means the exact letter(s) in the target that produce this sound.
+- "position" means beginning, middle, or end.
+- Do not invent a target_part.
+- Do not use the target itself as an example.
+- Keep the answer concise.
+- Do not add unnecessary grammar information.
+
+IMPORTANT FOR AUDIO:
+
+"audio_hint" is NOT IPA.
+
+It must be a very short English-friendly representation that Edge TTS can pronounce approximately as the sound itself.
+
+Examples:
+
+/ɪ/ = ih
+/iː/ = ee
+/ɛ/ = eh
+/æ/ = a
+/ʌ/ = uh
+/ə/ = uh
+/ɑː/ = ah
+/ɔː/ = aw
+/ʊ/ = oo
+/uː/ = oo
+/eɪ/ = ay
+/aɪ/ = eye
+/ɔɪ/ = oy
+/aʊ/ = ow
+/oʊ/ = oh
+
+Do not put IPA symbols inside audio_hint.
 """
 
-    for _ in range(MAX_AI_ATTEMPTS):
+    for attempt in range(MAX_AI_ATTEMPTS):
         raw = await _call_ai(prompt)
 
         data = _extract_json(raw)
@@ -334,7 +295,8 @@ RULES:
         if _validate_analysis(data, accent):
             return data
 
-        await asyncio.sleep(0.4)
+        if attempt < MAX_AI_ATTEMPTS - 1:
+            await asyncio.sleep(0.5)
 
     return None
 
@@ -347,9 +309,11 @@ def _validate_analysis(data, accent):
     if not isinstance(data, dict):
         return False
 
-    target = data.get("target")
+    target = str(
+        data.get("target", "")
+    ).strip()
 
-    if not isinstance(target, str) or not target.strip():
+    if not target:
         return False
 
     returned_accent = str(
@@ -359,9 +323,11 @@ def _validate_analysis(data, accent):
     if accent.lower() not in returned_accent:
         return False
 
-    full_ipa = data.get("full_ipa")
+    full_ipa = str(
+        data.get("full_ipa", "")
+    ).strip()
 
-    if not isinstance(full_ipa, str) or not full_ipa.strip():
+    if not full_ipa:
         return False
 
     sounds = data.get("sounds")
@@ -372,53 +338,49 @@ def _validate_analysis(data, accent):
     if not sounds:
         return False
 
-    if len(sounds) > MAX_SOUNDS:
-        data["sounds"] = sounds[:MAX_SOUNDS]
-        sounds = data["sounds"]
+    data["sounds"] = sounds[:MAX_SOUNDS]
 
-    for sound in sounds:
+    for sound in data["sounds"]:
         if not isinstance(sound, dict):
             return False
 
-        required = (
+        for key in (
             "sound",
             "name",
-            "common_spellings",
+            "spellings",
             "position",
             "target_part",
             "examples",
-        )
-
-        for key in required:
+        ):
             if key not in sound:
                 return False
 
-        if not str(sound.get("sound", "")).strip():
+        if not str(sound["sound"]).strip():
             return False
 
-        if not str(sound.get("name", "")).strip():
+        if not str(sound["name"]).strip():
             return False
 
-        if not str(sound.get("target_part", "")).strip():
+        if not str(sound["target_part"]).strip():
             return False
 
-        spellings = sound.get("common_spellings")
-
-        if not isinstance(spellings, list):
+        if not isinstance(
+            sound["spellings"],
+            list,
+        ):
             return False
 
-        examples = sound.get("examples")
+        examples = sound["examples"]
 
         if not isinstance(examples, list):
             return False
 
-        if not examples:
+        if len(examples) < 4:
             return False
 
-        if len(examples) > MAX_EXAMPLES_PER_SOUND:
-            sound["examples"] = examples[
-                :MAX_EXAMPLES_PER_SOUND
-            ]
+        sound["examples"] = examples[
+            :MAX_EXAMPLES_PER_SOUND
+        ]
 
         for example in sound["examples"]:
             if not isinstance(example, dict):
@@ -439,7 +401,7 @@ def _validate_analysis(data, accent):
 
 
 # ============================================================
-# HTML HELPERS
+# HTML
 # ============================================================
 
 def _esc(value):
@@ -450,13 +412,13 @@ def _esc(value):
 
 
 # ============================================================
-# FORMAT ANALYSIS
+# ANALYSIS FORMAT
 # ============================================================
 
 def _format_analysis(data):
-    target = _esc(data.get("target"))
-    accent = _esc(data.get("accent"))
-    full_ipa = _esc(data.get("full_ipa"))
+    target = _esc(data["target"])
+    accent = _esc(data["accent"])
+    full_ipa = _esc(data["full_ipa"])
 
     lines = [
         "🔊 <b>Sound Analysis</b>",
@@ -468,57 +430,59 @@ def _format_analysis(data):
         "━━━━━━━━━━━━━━━━━━",
     ]
 
-    sounds = data.get("sounds", [])
-
-    for index, sound in enumerate(sounds, start=1):
-        sound_ipa = _esc(sound.get("sound"))
-        name = _esc(sound.get("name"))
-        position = _esc(sound.get("position"))
-        target_part = _esc(sound.get("target_part"))
+    for index, sound in enumerate(
+        data["sounds"],
+        start=1,
+    ):
+        sound_ipa = _esc(sound["sound"])
+        name = _esc(sound["name"])
+        position = _esc(sound["position"])
+        target_part = _esc(
+            sound["target_part"]
+        )
 
         lines.extend(
             [
                 f"🔹 <b>Sound {index}</b>",
                 "",
-                f"🔊 <b>Sound:</b> <code>{sound_ipa}</code>",
+                f"🔊 <b>Sound:</b> "
+                f"<code>{sound_ipa}</code>",
                 f"📚 <b>Name:</b> {name}",
+                f"📍 <b>Position:</b> {position}",
+                f"✏️ <b>Letters in this word:</b> "
+                f"<code>{target_part}</code>",
                 "",
                 "🔤 <b>Common spellings:</b>",
             ]
         )
 
-        spellings = sound.get(
-            "common_spellings",
-            [],
-        )
+        spellings = [
+            str(x).strip()
+            for x in sound.get(
+                "spellings",
+                [],
+            )
+            if str(x).strip()
+        ]
 
         if spellings:
-            spelling_text = " · ".join(
-                f"<code>{_esc(item)}</code>"
-                for item in spellings
-                if str(item).strip()
+            lines.append(
+                " · ".join(
+                    f"<code>{_esc(x)}</code>"
+                    for x in spellings
+                )
             )
-
-            lines.append(spelling_text)
 
         lines.extend(
             [
-                "",
-                f"📍 <b>Position:</b> {position}",
-                f"✏️ <b>In this word:</b> <code>{target_part}</code>",
                 "",
                 "🧩 <b>Examples with the same sound:</b>",
             ]
         )
 
-        examples = sound.get(
-            "examples",
-            [],
-        )
-
-        for example in examples[:MAX_EXAMPLES_PER_SOUND]:
-            word = _esc(example.get("word"))
-            ipa = _esc(example.get("ipa"))
+        for example in sound["examples"][:4]:
+            word = _esc(example["word"])
+            ipa = _esc(example["ipa"])
 
             lines.append(
                 f"• <b>{word}</b> "
@@ -536,10 +500,10 @@ def _format_analysis(data):
 
 
 # ============================================================
-# KEYBOARD
+# TWO BUTTONS ONLY
 # ============================================================
 
-def _main_keyboard():
+def _accent_keyboard():
     return InlineKeyboardMarkup(
         [
             [
@@ -557,41 +521,14 @@ def _main_keyboard():
 
 
 # ============================================================
-# TARGET
+# TTS
 # ============================================================
 
-def _get_target_word(data):
-    analysis = data.get("analyses", {})
-
-    accent = data.get(
-        "selected_accent",
-        "American",
-    )
-
-    selected = analysis.get(accent)
-
-    if selected:
-        return str(
-            selected.get("target", "")
-        ).strip()
-
-    return str(
-        data.get("original_input", "")
-    ).strip()
-
-
-# ============================================================
-# TTS CLEANING
-# ============================================================
-
-def _clean_tts_text(value):
-    """
-    Remove punctuation and symbols so Edge TTS
-    does not read punctuation.
-    """
-
+def _clean_example_for_tts(value):
     value = str(value or "")
 
+    # Remove IPA/punctuation from anything that
+    # could accidentally be sent to TTS.
     value = re.sub(
         r"[^\w\s'-]",
         " ",
@@ -599,26 +536,16 @@ def _clean_tts_text(value):
         flags=re.UNICODE,
     )
 
-    value = value.replace(
-        "_",
-        " ",
-    )
-
     value = re.sub(
         r"\s+",
         " ",
         value,
-    ).strip()
+    )
 
-    return value
+    return value.strip()
 
 
 def _clean_audio_hint(value):
-    """
-    audio_hint is deliberately kept simple because
-    Edge TTS should not receive raw IPA symbols.
-    """
-
     value = str(value or "")
 
     value = re.sub(
@@ -631,16 +558,16 @@ def _clean_audio_hint(value):
         r"\s+",
         " ",
         value,
-    ).strip()
+    )
 
-    return value
+    return value.strip()
 
 
 # ============================================================
-# IPA -> TTS FALLBACK
+# FALLBACK SOUND HINTS
 # ============================================================
 
-_PHONEME_TTS_HINTS = {
+PHONEME_HINTS = {
     "ɪ": "ih",
     "i": "ee",
     "iː": "ee",
@@ -667,35 +594,35 @@ _PHONEME_TTS_HINTS = {
 }
 
 
-def _phoneme_to_tts_hint(sound):
-    sound = str(sound or "").strip()
+def _fallback_audio_hint(sound):
+    value = str(sound or "").strip()
+    value = value.strip("/[]")
 
-    sound = sound.strip("/[]")
+    if value in PHONEME_HINTS:
+        return PHONEME_HINTS[value]
 
-    if sound in _PHONEME_TTS_HINTS:
-        return _PHONEME_TTS_HINTS[sound]
-
-    # Try exact substring matches.
     for ipa, hint in sorted(
-        _PHONEME_TTS_HINTS.items(),
-        key=lambda item: len(item[0]),
+        PHONEME_HINTS.items(),
+        key=lambda x: len(x[0]),
         reverse=True,
     ):
-        if ipa in sound:
+        if ipa in value:
             return hint
 
     return ""
 
 
 # ============================================================
-# BUILD AUDIO SCRIPT
+# BUILD AUDIO
 # ============================================================
 
 def _build_audio_text(data):
     """
-    Audio order for every sound:
+    For each sound:
 
-    sound x3
+    sound
+    sound
+    sound
     Listen carefully
     example 1
     example 2
@@ -703,53 +630,51 @@ def _build_audio_text(data):
     example 4
 
     Then the next sound.
-
-    No punctuation is intentionally inserted.
     """
 
-    lines = []
+    parts = []
 
     for sound in data.get("sounds", []):
-        ipa = sound.get("sound", "")
-
         hint = _clean_audio_hint(
             sound.get("audio_hint", "")
         )
 
         if not hint:
-            hint = _phoneme_to_tts_hint(ipa)
+            hint = _fallback_audio_hint(
+                sound.get("sound", "")
+            )
 
         if not hint:
             continue
 
-        # The sound itself, three times.
-        lines.append(hint)
-        lines.append(hint)
-        lines.append(hint)
+        # Sound three times.
+        parts.append(hint)
+        parts.append(hint)
+        parts.append(hint)
 
-        # Deliberate teaching instruction.
-        lines.append("Listen carefully")
+        # Exactly the requested teaching phrase.
+        parts.append("Listen carefully")
 
-        examples = sound.get(
+        # Four example words.
+        for example in sound.get(
             "examples",
             [],
-        )
+        )[:MAX_EXAMPLES_PER_SOUND]:
 
-        for example in examples[
-            :MAX_EXAMPLES_PER_SOUND
-        ]:
-            word = _clean_tts_text(
+            word = _clean_example_for_tts(
                 example.get("word", "")
             )
 
             if word:
-                lines.append(word)
+                parts.append(word)
 
-    return "\n".join(lines)
+    # New lines are not spoken.
+    # They simply help separate the teaching units.
+    return "\n".join(parts)
 
 
 # ============================================================
-# GENERATE AUDIO
+# AUDIO GENERATION
 # ============================================================
 
 async def _generate_audio(data, accent):
@@ -771,14 +696,14 @@ async def _generate_audio(data, accent):
     os.close(fd)
 
     try:
-        communicate = edge_tts.Communicate(
+        communicator = edge_tts.Communicate(
             text=text,
             voice=voice,
             rate=TTS_RATE,
         )
 
         await asyncio.wait_for(
-            communicate.save(path),
+            communicator.save(path),
             timeout=60,
         )
 
@@ -810,17 +735,14 @@ async def _send_analysis(
 ):
     text = _format_analysis(data)
 
-    keyboard = _main_keyboard()
-
     try:
         return await message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
+            reply_markup=_accent_keyboard(),
         )
 
     except Exception:
-        # Fallback if Telegram rejects HTML.
         plain = re.sub(
             r"<[^>]+>",
             "",
@@ -829,12 +751,50 @@ async def _send_analysis(
 
         return await message.reply_text(
             plain,
-            reply_markup=keyboard,
+            reply_markup=_accent_keyboard(),
         )
 
 
 # ============================================================
-# /sounds COMMAND
+# SEND AUDIO
+# ============================================================
+
+async def _send_audio(
+    message,
+    data,
+    accent,
+):
+    path = await _generate_audio(
+        data,
+        accent,
+    )
+
+    if not path:
+        return False
+
+    try:
+        with open(path, "rb") as audio_file:
+            await message.reply_audio(
+                audio=audio_file,
+                title=f"{accent} Sound Training",
+                performer="FixMyEnglish",
+            )
+
+        return True
+
+    except Exception:
+        return False
+
+    finally:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+# ============================================================
+# /sounds
 # ============================================================
 
 async def sounds_command(
@@ -858,7 +818,6 @@ async def sounds_command(
     session = {
         "created_at": time.time(),
         "original_input": text,
-        "selected_accent": "American",
         "analyses": {},
     }
 
@@ -867,46 +826,11 @@ async def sounds_command(
         session,
     )
 
-    await _start_first_analysis(
-        update,
-        user.id,
-    )
-
-
-async def _start_first_analysis(
-    update,
-    user_id,
-):
-    session = _get_session(user_id)
-
-    if not session:
-        return
-
-    text = session["original_input"]
-
-    data = await _analyze_with_ai(
-        text,
-        "American",
-    )
-
-    if not data:
-        await update.effective_message.reply_text(
-            "❌ I couldn't complete the sound analysis. "
-            "Please try again."
-        )
-        return
-
-    session["analyses"]["American"] = data
-    session["selected_accent"] = "American"
-
-    _save_session(
-        user_id,
-        session,
-    )
-
-    await _send_analysis(
-        update.effective_message,
-        data,
+    # Initial screen: only two accent buttons.
+    await update.effective_message.reply_text(
+        "🔊 <b>Choose the pronunciation accent:</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=_accent_keyboard(),
     )
 
 
@@ -938,8 +862,6 @@ async def _accent_callback(
     if not query:
         return
 
-    await query.answer()
-
     user = update.effective_user
 
     if not user:
@@ -955,17 +877,21 @@ async def _accent_callback(
         )
         return
 
-    session["selected_accent"] = accent
+    await query.answer(
+        f"Preparing {accent} pronunciation..."
+    )
 
     analyses = session.setdefault(
         "analyses",
         {},
     )
 
+    # --------------------------------------------------------
+    # Get or create the real accent-specific analysis
+    # --------------------------------------------------------
+
     data = analyses.get(accent)
 
-    # Analyze the requested accent if it
-    # has not been analyzed yet.
     if not data:
         data = await _analyze_with_ai(
             session["original_input"],
@@ -973,151 +899,58 @@ async def _accent_callback(
         )
 
         if not data:
-            await query.answer(
-                f"❌ I couldn't complete the {accent} analysis.",
-                show_alert=True,
+            await query.message.reply_text(
+                f"❌ I couldn't complete the "
+                f"{accent} sound analysis.\n\n"
+                f"Your session is still active. "
+                f"Please try the accent again."
             )
             return
 
         analyses[accent] = data
+
+    session["selected_accent"] = accent
 
     _save_session(
         user.id,
         session,
     )
 
-    formatted = _format_analysis(data)
+    # --------------------------------------------------------
+    # Message 1: complete analysis
+    # --------------------------------------------------------
 
-    try:
-        await query.edit_message_text(
-            formatted,
-            parse_mode=ParseMode.HTML,
-            reply_markup=_main_keyboard(),
-        )
-
-    except Exception:
-        try:
-            await query.edit_message_text(
-                re.sub(
-                    r"<[^>]+>",
-                    "",
-                    formatted,
-                ),
-                reply_markup=_main_keyboard(),
-            )
-        except Exception:
-            pass
-
-
-# ============================================================
-# AUDIO CALLBACK
-# ============================================================
-
-async def _audio_callback(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    query = update.callback_query
-
-    if not query:
-        return
-
-    user = update.effective_user
-
-    if not user:
-        return
-
-    session = _get_session(user.id)
-
-    if not session:
-        await query.answer(
-            "⏳ This analysis session has expired. "
-            "Please use /sounds again.",
-            show_alert=True,
-        )
-        return
-
-    accent = session.get(
-        "selected_accent",
-        "American",
+    analysis_message = await _send_analysis(
+        query.message,
+        data,
     )
 
-    data = session.get(
-        "analyses",
-        {},
-    ).get(accent)
-
-    if not data:
-        await query.answer(
-            "❌ Please select the accent first.",
-            show_alert=True,
-        )
+    if not analysis_message:
         return
 
-    await query.answer(
-        f"🎧 Preparing {accent} slow audio..."
-    )
+    # --------------------------------------------------------
+    # Message 2: audio directly underneath analysis
+    # --------------------------------------------------------
 
-    path = await _generate_audio(
+    audio_sent = await _send_audio(
+        query.message,
         data,
         accent,
     )
 
-    if not path:
-        await query.message.reply_text(
-            "❌ I couldn't generate the audio. "
-            "Your session is still active."
-        )
-        return
+    # --------------------------------------------------------
+    # End session ONLY after successful audio
+    # --------------------------------------------------------
 
-    sent_successfully = False
-
-    try:
-        with open(
-            path,
-            "rb",
-        ) as audio_file:
-            await query.message.reply_audio(
-                audio=audio_file,
-                title=(
-                    f"{accent} Sound Training"
-                ),
-                performer="FixMyEnglish",
-            )
-
-        sent_successfully = True
-
-    except Exception:
-        sent_successfully = False
-
-    finally:
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-        except Exception:
-            pass
-
-    # IMPORTANT:
-    # The session ends ONLY after the audio was
-    # successfully sent.
-    if sent_successfully:
+    if audio_sent:
         _end_session(user.id)
 
-        try:
-            await query.edit_message_reply_markup(
-                reply_markup=None,
-            )
-        except Exception:
-            pass
-
     else:
-        try:
-            await query.message.reply_text(
-                "❌ The audio could not be sent. "
-                "Your session is still active."
-            )
-        except Exception:
-            pass
+        await query.message.reply_text(
+            "❌ I couldn't send the audio file.\n\n"
+            "Your session is still active. "
+            "Please try again."
+        )
 
 
 # ============================================================
@@ -1151,20 +984,12 @@ async def sounds_callback(
         )
         return
 
-    if data == "snd_audio":
-        await _audio_callback(
-            update,
-            context,
-        )
-        return
-
 
 # ============================================================
-# HANDLERS
+# REGISTER
 # ============================================================
 
 def register_sounds_handlers(application):
-    # Slash commands
     application.add_handler(
         CommandHandler(
             ["sounds", "sound"],
@@ -1172,7 +997,6 @@ def register_sounds_handlers(application):
         )
     )
 
-    # Arabic commands
     application.add_handler(
         MessageHandler(
             filters.TEXT
@@ -1184,14 +1008,13 @@ def register_sounds_handlers(application):
         )
     )
 
-    # Buttons
     application.add_handler(
         CallbackQueryHandler(
             sounds_callback,
-            pattern=r"^snd_(us|uk|audio)$",
+            pattern=r"^snd_(us|uk)$",
         )
     )
 
     print(
         "[SOUNDS] handlers registered successfully."
-)
+    )
