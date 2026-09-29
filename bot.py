@@ -20,6 +20,7 @@ from telegram import (
     ReactionTypeEmoji,
     BotCommandScopeChat,
 )
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -30,8 +31,12 @@ from telegram.ext import (
 )
 
 import edge_tts
+
 import analyze
 import grammar
+import sounds
+import media_download
+import media_play
 
 
 # =========================================================
@@ -247,7 +252,6 @@ def save_vocab(user_id, word):
 # =========================================================
 # TEXT HELPERS
 # =========================================================
-
 def clean_text(text):
     return (text or "").strip()
 
@@ -311,7 +315,6 @@ def get_pronunciation_target(message):
     text = ""
 
     if arguments:
-
         parts = arguments.split(maxsplit=1)
 
         if parts[0].lower() == "slowly":
@@ -396,15 +399,16 @@ async def send_long_reply(update, text, reply_markup=None):
     parts = split_long_text(formatted)
 
     for i, part in enumerate(parts):
+        kwargs = {}
+
+        # Add the keyboard only to the final message part
+        if reply_markup and i == len(parts) - 1:
+            kwargs["reply_markup"] = reply_markup
+
         try:
-            kwargs = {"parse_mode": "HTML"}
-            # إضافة الزر فقط في الجزء الأخير من الرسالة
-            if reply_markup and i == len(parts) - 1:
-                kwargs["reply_markup"] = reply_markup
-                
             await message.reply_text(
                 part,
-                **kwargs
+                **kwargs,
             )
 
         except Exception as e:
@@ -413,20 +417,15 @@ async def send_long_reply(update, text, reply_markup=None):
                 repr(e),
                 flush=True,
             )
-            
-            kwargs = {}
-            if reply_markup and i == len(parts) - 1:
-                kwargs["reply_markup"] = reply_markup
-                
+
             await message.reply_text(
                 re.sub(
                     r"<[^>]+>",
                     "",
                     part,
                 ),
-                **kwargs
-            )
-
+                **kwargs,
+)
 
 # =========================================================
 # GROQ ASYNC WRAPPER
