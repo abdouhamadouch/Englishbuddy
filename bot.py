@@ -377,6 +377,13 @@ def format_ai_response(text):
         text,
         flags=re.DOTALL,
     )
+    
+    text = re.sub(
+        r"__(.+?)__",
+        r"<b>\1</b>",
+        text,
+        flags=re.DOTALL,
+    )
 
     text = re.sub(
         r"(?m)^\s*\*\s+",
@@ -408,6 +415,7 @@ async def send_long_reply(update, text, reply_markup=None):
         try:
             await message.reply_text(
                 part,
+                parse_mode="HTML",
                 **kwargs,
             )
 
@@ -425,7 +433,7 @@ async def send_long_reply(update, text, reply_markup=None):
                     part,
                 ),
                 **kwargs,
-)
+            )
 
 # =========================================================
 # GROQ ASYNC WRAPPER
@@ -1155,61 +1163,61 @@ Word:
 
 Use this structure:
 
-🌱 **WORD ROOT & MORPHOLOGY**
+🌱 __WORD ROOT & MORPHOLOGY__
 ━━━━━━━━━━━━━━━━━━
 
-🔤 **Word:** [original word]
+🔤 __Word:__ [original word]
 
-🌱 **Root:** [root]
-🇩🇿 **Core meaning:** [Arabic meaning of the root]
+🌱 __Root:__ [root]
+🇩🇿 __Core meaning:__ [Arabic meaning of the root]
 
-📌 **Root idea:** [short, clear explanation of the original/basic idea
+📌 __Root idea:__ [short, clear explanation of the original/basic idea
 of the root, such as "throw / cast" for JECT]
 
 ━━━━━━━━━━━━━━━━━━
 
-🧩 **WORD STRUCTURE**
+🧩 __WORD STRUCTURE__
 
-🔹 **Prefix:** [prefix or None]
+🔹 __Prefix:__ [prefix or None]
 🇩🇿 [meaning of the prefix]
 
-🔹 **Root:** [root]
+🔹 __Root:__ [root]
 
-🔹 **Suffix:** [suffix or None]
+🔹 __Suffix:__ [suffix or None]
 🇩🇿 [meaning of the suffix]
 
-🔗 **Formation:**
+🔗 __Formation:__
 [prefix] + [root] + [suffix] → [word]
 
 ━━━━━━━━━━━━━━━━━━
 
-🌿 **WORDS BUILT FROM THE SAME ROOT**
+🌿 __WORDS BUILT FROM THE SAME ROOT__
 
-1️⃣ **[word]** — [part of speech]
+1️⃣ __[word]__ — [part of speech]
 🇩🇿 [Arabic meaning]
 🧩 [prefix] + [root] → [short explanation of how the root contributes to the meaning]
 📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-2️⃣ **[word]** — [part of speech]
+2️⃣ __[word]__ — [part of speech]
 🇩🇿 [Arabic meaning]
 🧩 [prefix] + [root] → [short explanation]
 📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-3️⃣ **[word]** — [part of speech]
+3️⃣ __[word]__ — [part of speech]
 🇩🇿 [Arabic meaning]
 🧩 [prefix] + [root] → [short explanation]
 📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-4️⃣ **[word]** — [part of speech]
+4️⃣ __[word]__ — [part of speech]
 🇩🇿 [Arabic meaning]
 🧩 [prefix] + [root] → [short explanation]
 📝 [natural English example]
 🇩🇿 [Arabic translation]
 
-5️⃣ **[word]** — [part of speech]
+5️⃣ __[word]__ — [part of speech]
 🇩🇿 [Arabic meaning]
 🧩 [prefix] + [root] → [short explanation]
 📝 [natural English example]
@@ -1217,7 +1225,7 @@ of the root, such as "throw / cast" for JECT]
 
 ━━━━━━━━━━━━━━━━━━
 
-💡 **ROOT IN ONE IDEA**
+💡 __ROOT IN ONE IDEA__
 [Give one short sentence explaining the central idea of the root
 and how the prefixes change its meaning.]
 
@@ -1241,9 +1249,8 @@ Rules:
 - Examples must be natural, short, and useful.
 - Every derived word must have an Arabic meaning and an English example
   with Arabic translation.
-- Use **bold** for important words and headings.
+- Use __bold__ for important words and headings using double underscores.
 - Do not use decorative star characters such as * or ** as visible text.
-- Markdown bold formatting is allowed.
 - Keep the answer organized, beautiful, and concise.
 - Do not ask a follow-up question.
 
@@ -1278,44 +1285,44 @@ that belong to the same English word family.
 
 Use this structure:
 
-🧩 **WORD FAMILY**
+🧩 __WORD FAMILY__
 ━━━━━━━━━━━━━━━━━━
 
-🔤 **Base word:** [base word]
-🇩🇿 **Meaning:** [Arabic meaning]
-
-━━━━━━━━━━━━━━━━━━
-
-🌿 **FAMILY MEMBERS**
-
-1️⃣ **[word]** — [part of speech]
-🇩🇿 [Arabic meaning]
-📝 [natural English example]
-🇩🇿 [Arabic translation]
-
-2️⃣ **[word]** — [part of speech]
-🇩🇿 [Arabic meaning]
-📝 [natural English example]
-🇩🇿 [Arabic translation]
-
-3️⃣ **[word]** — [part of speech]
-🇩🇿 [Arabic meaning]
-📝 [natural English example]
-🇩🇿 [Arabic translation]
-
-4️⃣ **[word]** — [part of speech]
-🇩🇿 [Arabic meaning]
-📝 [natural English example]
-🇩🇿 [Arabic translation]
-
-5️⃣ **[word]** — [part of speech]
-🇩🇿 [Arabic meaning]
-📝 [natural English example]
-🇩🇿 [Arabic translation]
+🔤 __Base word:__ [base word]
+🇩🇿 __Meaning:__ [Arabic meaning]
 
 ━━━━━━━━━━━━━━━━━━
 
-💡 **PATTERN**
+🌿 __FAMILY MEMBERS__
+
+1️⃣ __[word]__ — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 [natural English example]
+🇩🇿 [Arabic translation]
+
+2️⃣ __[word]__ — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 [natural English example]
+🇩🇿 [Arabic translation]
+
+3️⃣ __[word]__ — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 [natural English example]
+🇩🇿 [Arabic translation]
+
+4️⃣ __[word]__ — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 [natural English example]
+🇩🇿 [Arabic translation]
+
+5️⃣ __[word]__ — [part of speech]
+🇩🇿 [Arabic meaning]
+📝 [natural English example]
+🇩🇿 [Arabic translation]
+
+━━━━━━━━━━━━━━━━━━
+
+💡 __PATTERN__
 [Briefly explain how the forms are related:
 verb → noun, adjective → adverb, negative form, etc.]
 
@@ -1334,9 +1341,8 @@ Rules:
   with Arabic translation.
 - Show the part of speech clearly.
 - Prefer common modern English forms.
-- Use **bold** for important words and headings.
+- Use __bold__ for important words and headings using double underscores.
 - Do not use decorative star characters such as * or ** as visible text.
-- Markdown bold formatting is allowed.
 - Keep the answer organized, beautiful, and concise.
 - Do not ask a follow-up question.
 
@@ -2116,32 +2122,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔐 Your access request has been sent to the owner.\n"
             "Please wait for approval."
         )
+        return
 
-await update.effective_message.reply_text(
-    "👋 <b>Welcome to FixMyEnglish Pro!</b>\n\n"
-    "Your personal English learning assistant — designed to help you "
-    "understand, practice, and improve your English every day.\n\n"
-    "━━━━━━━━━━━━━━━━━━\n"
-    "🌍 <b>Learn</b>\n"
-    "Translation, word meanings, synonyms, antonyms, and word families.\n\n"
-    "✍️ <b>Improve</b>\n"
-    "English correction, grammar analysis, and natural word usage.\n\n"
-    "🗣 <b>Speak</b>\n"
-    "American & British pronunciation, IPA, and pronunciation audio.\n\n"
-    "🔎 <b>Explore</b>\n"
-    "Deep word analysis, roots, CEFR levels, and useful word relations.\n\n"
-    "🤖 <b>Practice</b>\n"
-    "AI assistance and Talk Mode for interactive English practice.\n\n"
-    "🎵 <b>More</b>\n"
-    "Media tools for downloading and playing supported content.\n\n"
-    "━━━━━━━━━━━━━━━━━━\n"
-    "💡 <b>Getting Started</b>\n\n"
-    "Use <b>/help</b> to see all available commands.\n\n"
-    "You can also reply to a message and use many commands "
-    "without typing the word again.\n\n"
-    "📚 <b>Learn consistently. Improve naturally.</b>",
-    parse_mode="HTML",
-)
+    await update.effective_message.reply_text(
+        "👋 <b>Welcome to FixMyEnglish Pro!</b>\n\n"
+        "Your personal English learning assistant — designed to help you "
+        "understand, practice, and improve your English every day.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🌍 <b>Learn</b>\n"
+        "Translation, word meanings, synonyms, antonyms, and word families.\n\n"
+        "✍️ <b>Improve</b>\n"
+        "English correction, grammar analysis, and natural word usage.\n\n"
+        "🗣 <b>Speak</b>\n"
+        "American & British pronunciation, IPA, and pronunciation audio.\n\n"
+        "🔎 <b>Explore</b>\n"
+        "Deep word analysis, roots, CEFR levels, and useful word relations.\n\n"
+        "🤖 <b>Practice</b>\n"
+        "AI assistance and Talk Mode for interactive English practice.\n\n"
+        "🎵 <b>More</b>\n"
+        "Media tools for downloading and playing supported content.\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💡 <b>Getting Started</b>\n\n"
+        "Use <b>/help</b> to see all available commands.\n\n"
+        "You can also reply to a message and use many commands "
+        "without typing the word again.\n\n"
+        "📚 <b>Learn consistently. Improve naturally.</b>",
+        parse_mode="HTML",
+    )
 
 
 async def help_command(update, context):
@@ -3684,6 +3691,14 @@ async def set_command_menu(application):
             ("ex", "Explain"),
             ("analysis", "Analyze a word"),
             ("analys", "Analyze a word"),
+            ("grammar", "Grammar analysis"),
+            ("sounds", "Sounds analysis"),
+            ("download", "Download media"),
+            ("play", "Play media"),
+            ("pause", "Pause media"),
+            ("resume", "Resume media"),
+            ("skip", "Skip media"),
+            ("stop", "Stop media"),
             ("root", "Word root"),
             ("fw", "Word family"),
             ("syn", "Synonyms"),
