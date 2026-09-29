@@ -3772,11 +3772,27 @@ def build_application():
         .build()
     )
 
+    # =====================================================
+    # CONFIGURE FEATURE MODULES
+    # =====================================================
+
     analyze.configure(
         ask_groq,
         get_target_text,
         is_approved,
     )
+
+    grammar.set_ai_function(
+        free_ai
+    )
+
+    sounds.set_ai_function(
+        free_ai
+    )
+
+    # =====================================================
+    # BASIC COMMANDS
+    # =====================================================
 
     application.add_handler(
         CommandHandler(
@@ -3861,7 +3877,7 @@ def build_application():
             levels_command,
         )
     )
-    
+
     application.add_handler(
         CommandHandler(
             "ipaus",
@@ -3925,6 +3941,10 @@ def build_application():
         )
     )
 
+    # =====================================================
+    # OWNER COMMANDS
+    # =====================================================
+
     application.add_handler(
         CommandHandler(
             "add",
@@ -3967,23 +3987,13 @@ def build_application():
         )
     )
 
-    application.add_handler(
-        CallbackQueryHandler(
-            analyze.analysis_callback,
-            pattern=r"^analysis:",
-        )
-    )
+    # =====================================================
+    # WORD ANALYSIS
+    # =====================================================
 
     application.add_handler(
         CommandHandler(
-            "analysis",
-            analyze.analysis_command,
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "analys",
+            ["analysis", "analys"],
             analyze.analysis_command,
         )
     )
@@ -3991,9 +4001,45 @@ def build_application():
     application.add_handler(
         CallbackQueryHandler(
             analyze.analysis_callback,
-            pattern=r"^analysis:",
+            pattern=r"^wa:",
         )
     )
+
+    # =====================================================
+    # GRAMMAR
+    # =====================================================
+
+    grammar.register_grammar_handlers(
+        application
+    )
+
+    # =====================================================
+    # SOUND / VOWEL ANALYSIS
+    # =====================================================
+
+    sounds.register_sounds_handlers(
+        application
+    )
+
+    # =====================================================
+    # MEDIA DOWNLOAD
+    # =====================================================
+
+    media_download.register_media_download(
+        application
+    )
+
+    # =====================================================
+    # MEDIA PLAY
+    # =====================================================
+
+    media_play.register_media_play(
+        application
+    )
+
+    # =====================================================
+    # ACCESS BUTTONS
+    # =====================================================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -4001,33 +4047,24 @@ def build_application():
         )
     )
 
+    # =====================================================
+    # GENERAL TEXT HANDLER
+    # =====================================================
+
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             normal_message_handler,
         )
     )
-    
-
-    # =====================================================
-    # GROUP ACCESS REQUEST
-    # =====================================================
-
-    application.add_handler(
-        MessageHandler(
-            filters.ALL,
-            group_access_request,
-        ),
-        group=1,
-    )
-
-    application.add_error_handler(
-        error_handler
-    )
 
     return application
 
+        
 
+        
+
+    
 # =========================================================
 # MAIN
 # =========================================================
