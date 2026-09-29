@@ -47,9 +47,10 @@ import media_play
 # =========================================================
 # CONFIG
 # =========================================================
-
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2", "").strip()
 
 try:
     OWNER_ID = int(os.getenv("OWNER_ID", "0") or "0")
@@ -71,12 +72,14 @@ AUTOCORRECT_FILE = Path("autocorrect_groups.json")
 app = Flask(__name__)
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+groq_client_2 = Groq(api_key=GROQ_API_KEY_2) if GROQ_API_KEY_2 else None
 
 # RLock allows re-entrant locking, avoiding deadlocks within internal calls.
 json_lock = threading.RLock()
 talk_mode_users = set()
 
 OWNER_USERNAME = None
+
 
 
 # =========================================================
