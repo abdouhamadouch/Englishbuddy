@@ -34,7 +34,7 @@ WAIT_SECONDS = 60
 # Maximum duration: 40 minutes
 MAX_DURATION = 40 * 60
 
-# Maximum file size: 50 MB
+# Maximum downloaded file size: 50 MB
 MAX_FILE_SIZE = 50 * 1024 * 1024
 
 DOWNLOAD_ROOT = Path(
@@ -189,7 +189,6 @@ def build_ydl_options(
         "quiet": True,
         "no_warnings": True,
 
-        # Extra protection against huge files.
         "max_filesize": MAX_FILE_SIZE,
 
         "writethumbnail": False,
@@ -340,7 +339,7 @@ def download_media_sync(
 
         with yt_dlp.YoutubeDL(options) as ydl:
 
-            # First inspect the media.
+            # Inspect first.
             info = ydl.extract_info(
                 url,
                 download=False,
@@ -605,10 +604,8 @@ async def start_download_request(
     if key is None:
         return
 
-    # Cancel previous request.
-    cancel_pending_request(
-        update
-    )
+    # Cancel previous waiting request.
+    cancel_pending_request(update)
 
     await message.reply_text(
         waiting_text()
@@ -688,11 +685,6 @@ async def media_download_text_handler(
 
         if cancel_pending_request(update):
 
-            context.user_data.pop(
-                "media_download_url",
-                None,
-            )
-
             await message.reply_text(
                 "Download request cancelled."
             )
@@ -733,7 +725,6 @@ async def media_download_text_handler(
         is_download_command = True
         remainder = text[2:].strip()
 
-    # Slash commands.
     elif lower == "/download":
 
         is_download_command = True
@@ -769,8 +760,8 @@ async def media_download_text_handler(
             key
         )
 
-        # Only accept a URL when the user
-        # actually has an active waiting request.
+        # Do not process ordinary URLs unless
+        # the user previously started تحميل.
         if not pending:
             return
 
@@ -779,7 +770,6 @@ async def media_download_text_handler(
         if not url:
             return
 
-        # Consume request.
         data = PENDING_DOWNLOADS.pop(
             key,
             None,
@@ -939,8 +929,7 @@ async def media_download_callback(
     else:
         return
 
-    # Prevent the same buttons
-    # from being reused accidentally.
+    # Prevent reusing the same request.
     context.user_data.pop(
         "media_download_url",
         None,
@@ -971,6 +960,8 @@ def register_media_download(
     application,
 ):
 
+    # Keep this handler in a lower-priority group
+    # so normal bot/AI handlers are not blocked.
     application.add_handler(
         MessageHandler(
             filters.TEXT
@@ -986,4 +977,8 @@ def register_media_download(
             pattern=r"^md_(video|audio|cancel)$",
         ),
         group=30,
-  )
+    )
+
+    print(
+        "[MEDIA DOWNLOAD] registered successfully."
+)
