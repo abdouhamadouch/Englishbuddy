@@ -218,6 +218,9 @@ Analyze this English word or short phrase:
 
 Accent: {accent}
 
+IMPORTANT:
+This feature is ONLY for VOWEL SOUNDS.
+
 Return ONLY valid JSON.
 No Markdown.
 No explanation outside JSON.
@@ -250,20 +253,32 @@ Use exactly this structure:
 
 RULES:
 
-- Analyze the important vowel and/or consonant sounds separately.
-- Maximum 4 important sounds.
-- Give exactly 4 useful example words for every sound.
-- Every example must contain the SAME sound.
+- Analyze ONLY the important vowel sounds.
+- Do NOT analyze consonant sounds at all.
+- Do NOT create separate entries for consonants.
+- Ignore consonant sounds completely.
+- Focus only on the vowel sound(s) actually heard in the target.
+- If the word contains several important vowel sounds, analyze each
+  vowel sound separately.
+- Identify the exact letters in the target that represent each vowel
+  sound.
+- Distinguish short vowels, long vowels, diphthongs, and schwa when
+  relevant.
+- Maximum 4 important vowel sounds.
+- Give exactly 4 useful example words for every vowel sound.
+- Every example must contain the SAME vowel sound.
 - Give IPA for every example in the selected accent.
 - Do not use the target itself as an example.
+- Examples should be common and useful English words.
+- Do not invent unusual or artificial examples.
 
 SPELLINGS:
 
 "target_part" means ONLY the exact letters in the target that produce
-this sound.
+this vowel sound.
 
 "spellings" means OTHER common English spelling patterns that can
-represent this same sound in other words.
+represent this same vowel sound in other words.
 
 For example, for /aɪ/, possible common patterns include:
 i_e, igh, y, ie, uy, i
@@ -271,29 +286,47 @@ i_e, igh, y, ie, uy, i
 Do NOT confuse "target_part" with "spellings".
 
 Example:
-If the target is "time" and the sound is /aɪ/:
+If the target is "time" and the vowel sound is /aɪ/:
 
-"target_part": "i"
+"target_part": "i_e"
 "spellings": ["i_e", "igh", "y", "ie", "uy", "i"]
 
-Only include spelling patterns that genuinely can represent the
-exact sound. Do not invent patterns.
+Only include spelling patterns that genuinely can represent the exact
+vowel sound. Do not invent patterns.
+
+IMPORTANT:
+"target_part" must represent the actual vowel spelling in the target,
+not every letter in the word.
 
 POSITION:
 
 "position" must be beginning, middle, or end.
 
+Position refers to where the vowel sound occurs in the target word.
+
 NAME:
 
 Give a normal pronunciation-teaching name such as:
+
+Short A
+Short E
 Short I
-Long I
+Short O
+Short U
 Long A
+Long E
+Long I
+Long O
+Long U
 Schwa
-Voiced TH
-Unvoiced TH
-SH sound
-CH sound
+A sound
+E sound
+I sound
+O sound
+U sound
+AY sound
+OW sound
+OY sound
 
 Keep names short and natural.
 
@@ -302,7 +335,7 @@ AUDIO:
 "audio_hint" is NOT IPA.
 
 It must be a very short English-friendly representation that Edge TTS
-can pronounce approximately as the sound itself.
+can pronounce approximately as the vowel sound itself.
 
 Examples:
 
@@ -326,6 +359,40 @@ Examples:
 Do not put IPA symbols inside audio_hint.
 
 Keep the entire JSON concise.
+
+CRITICAL:
+Every item inside "sounds" must be a VOWEL SOUND.
+
+Never include:
+- /p/
+- /b/
+- /t/
+- /d/
+- /k/
+- /g/
+- /f/
+- /v/
+- /s/
+- /z/
+- /ʃ/
+- /ʒ/
+- /tʃ/
+- /dʒ/
+- /θ/
+- /ð/
+- /h/
+- /m/
+- /n/
+- /ŋ/
+- /l/
+- /r/
+- /w/
+- /j/
+
+or any other consonant sound as a separate sound entry.
+
+The goal is to teach the vowel sounds of the target, not to analyze
+every letter or every phoneme.
 """
 
     for attempt in range(MAX_AI_ATTEMPTS):
@@ -466,7 +533,7 @@ def _format_analysis(data):
     full_ipa = _esc(data["full_ipa"])
 
     lines = [
-        "🔊 <b>Sound Analysis</b>",
+        "🔊 <b>Vowel Sound Analysis</b>",
         "",
         f"🎯 <b>Word:</b> {target}",
         f"🗣 <b>Accent:</b> {accent}",
@@ -488,7 +555,7 @@ def _format_analysis(data):
 
         lines.extend(
             [
-                f"🔹 <b>Sound {index}</b>",
+                f"🔹 <b>Vowel Sound {index}</b>",
                 "",
                 f"🔊 <b>Sound:</b> "
                 f"<code>{sound_ipa}</code>",
@@ -521,7 +588,7 @@ def _format_analysis(data):
         lines.extend(
             [
                 "",
-                "🧩 <b>Examples with the same sound:</b>",
+                "🧩 <b>Examples with the same vowel sound:</b>",
             ]
         )
 
@@ -697,12 +764,12 @@ def _fallback_audio_hint(sound):
 
 def _build_audio_text(data):
     """
-    For every important sound:
+    For every important vowel sound:
 
-    Sound name
-    Sound
-    Sound
-    Sound
+    Vowel sound name
+    Vowel sound
+    Vowel sound
+    Vowel sound
     Listen carefully
     Example 1
     Example 2
@@ -714,7 +781,7 @@ def _build_audio_text(data):
 
     for sound in data.get("sounds", []):
         # ----------------------------------------------------
-        # Say the NAME of the sound first.
+        # Say the NAME of the vowel sound first.
         # Example: "Schwa", "Long I", "Short E"
         # ----------------------------------------------------
 
@@ -726,7 +793,7 @@ def _build_audio_text(data):
             parts.append(name)
 
         # ----------------------------------------------------
-        # Then pronounce the actual sound 3 times.
+        # Then pronounce the actual vowel sound 3 times.
         # ----------------------------------------------------
 
         hint = _clean_audio_hint(
@@ -878,7 +945,7 @@ async def _send_audio(
         with open(path, "rb") as audio_file:
             await message.reply_audio(
                 audio=audio_file,
-                title=f"{accent} Sound Training",
+                title=f"{accent} Vowel Sound Training",
                 performer="FixMyEnglish",
             )
 
@@ -1110,7 +1177,7 @@ async def _accent_callback(
         return
 
     await query.answer(
-        f"Preparing {accent} pronunciation..."
+        f"Preparing {accent} vowel pronunciation..."
     )
 
     analyses = session.setdefault(
@@ -1133,7 +1200,7 @@ async def _accent_callback(
         if not data:
             await query.message.reply_text(
                 f"❌ I couldn't complete the "
-                f"{accent} sound analysis.\n\n"
+                f"{accent} vowel sound analysis.\n\n"
                 f"Your session is still active. "
                 f"Please try again."
             )
@@ -1337,4 +1404,4 @@ def register_sounds_handlers(application):
 
     print(
         "[SOUNDS] handlers registered successfully."
-            )
+    )
