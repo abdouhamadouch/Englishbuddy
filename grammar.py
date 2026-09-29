@@ -1,36 +1,21 @@
 # grammar.py
 # FixMyEnglish - Grammar Analyzer
 #
-# Commands:
-# /grammar
-# /gram
-# قواعد
-# جرامر
-#
-# Works with:
-# 1. A word
-# 2. A phrase
-# 3. A full sentence
-# 4. Replying to a message
-#
-# The module analyzes:
-# - Grammar rules
-# - Tenses
-# - Passive / Active voice
-# - Sentence structures
-# - Conditionals
-# - Gerunds / infinitives
-# - Modals
-# - Articles
-# - Prepositions
-# - Other grammar actually present in the text
-# - Common mistakes
-#
-# IMPORTANT:
-# This file does NOT create a new AI client.
-# It receives the existing AI function from bot.py.
+# Features:
+# - /grammar
+# - /gram
+# - قواعد
+# - جرامر
+# - Works with words, phrases, sentences, or grammar-rule names
+# - Can analyze replied messages
+# - Explains the actual grammar rule
+# - Explains structure, usage, examples, comparisons and common mistakes
+# - Common Mistakes appears only when genuinely relevant
+# - Uses Telegram HTML formatting
+# - AI function is injected from bot.py
 
 
+import re
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -41,43 +26,29 @@ from telegram.ext import (
 )
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
-MAX_INPUT_LENGTH = 3000
-
-
-# ============================================================
+# =========================================================
 # AI FUNCTION
-# ============================================================
+# =========================================================
 
 _ai_function = None
 
 
 def set_ai_function(ai_function):
     """
-    Connect grammar.py to the existing AI function in bot.py.
-
-    Example in bot.py:
-
-        from grammar import set_ai_function, register_grammar_handlers
-        set_ai_function(free_ai)
-        register_grammar_handlers(application)
+    Receive the AI function from bot.py.
     """
     global _ai_function
     _ai_function = ai_function
 
 
-# ============================================================
-# GET TEXT
-# ============================================================
+# =========================================================
+# HELPERS
+# =========================================================
 
-def _get_reply_text(update: Update) -> str | None:
+def _get_reply_text(update: Update):
     """
-    Get text from the message being replied to.
+    Get text/caption from the replied-to message.
     """
-
     message = update.effective_message
 
     if not message or not message.reply_to_message:
@@ -95,254 +66,245 @@ def _get_reply_text(update: Update) -> str | None:
 
 
 def _clean_input(text: str) -> str:
+    """
+    Clean and limit user input.
+    """
+    if not text:
+        return ""
+
     text = text.strip()
 
-    if len(text) > MAX_INPUT_LENGTH:
-        text = text[:MAX_INPUT_LENGTH]
+    if len(text) > 3000:
+        text = text[:3000]
 
     return text
 
 
-# ============================================================
-# GRAMMAR PROMPT
-# ============================================================
+def _escape_problematic_html(text: str) -> str:
+    """
+    Telegram HTML can fail if the AI accidentally produces
+    unsupported tags. We only remove obvious unsupported tags.
+    We keep <b> because it is intentionally used.
+    """
+    if not text:
+        return text
+
+    # Remove markdown emphasis if AI accidentally uses it.
+    text = text.replace("**", "")
+
+    # Remove common markdown code fences.
+    text = text.replace("```html", "")
+    text = text.replace("```", "")
+
+    # Remove unsupported HTML tags while keeping <b>.
+    text = re.sub(
+        r"</?(?!b\b)[a-zA-Z][^>]*>",
+        "",
+        text,
+    )
+
+    return text.strip()
+
+
+async def _reply_result(message, result: str):
+    """
+    Send the grammar result safely.
+    """
+    result = (result or "").strip()
+
+    if not result:
+        await message.reply_text(
+            "I couldn't generate the grammar explanation."
+        )
+        return
+
+    result = _escape_problematic_html(result)
+
+    try:
+        await message.reply_text(
+            result,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Safe fallback if malformed HTML remains.
+        plain = re.sub(r"</?b>", "", result)
+
+        await message.reply_text(
+            plain,
+            disable_web_page_preview=True,
+        )
+
+
+# =========================================================
+# PROMPT
+# =========================================================
 
 def build_grammar_prompt(text: str) -> str:
     """
-    Build the AI prompt for grammar analysis.
+    Build a detailed grammar-teaching prompt.
     """
 
     return f"""
-You are the Grammar Analyzer of FixMyEnglish.
+You are the Grammar Teacher inside FixMyEnglish.
 
-Analyze the following English input:
+The user wants to LEARN grammar, not merely receive a short correction.
 
+Analyze the following user input:
+
+USER INPUT:
 {text}
 
-Your job is to teach grammar clearly and accurately.
+Your job is to identify the genuinely relevant grammar and TEACH it clearly.
 
-IMPORTANT RULES:
+IMPORTANT:
+- Do not give a useless one-line answer.
+- Do not automatically treat every input as an error.
+- If the sentence is correct, explain the grammar rule that makes it correct.
+- If the sentence is incorrect, explain the real grammatical problem and why it is wrong.
+- If the user gives a grammar rule/name such as "Present Perfect", teach that rule directly.
+- If the user gives a word, explain the important grammatical patterns and constructions associated with that word.
+- If the user gives a phrase, explain the grammar contained in the phrase.
+- Do not invent grammar problems.
+- Do not discuss grammar that is unrelated to the user's input.
+- Focus on useful English grammar for an A2-B1 learner, but explain more advanced grammar when the input requires it.
 
-1. First determine what the user gave you:
-   - a single word
-   - a short phrase
-   - or a complete sentence / group of sentences.
+TEACHING STYLE:
+- Explain mainly in clear Arabic.
+- Keep English grammar terms in English when useful.
+- Make the explanation easy to understand.
+- Give practical examples.
+- Explain WHY the structure is used, not only WHAT it is.
+- Do not overload the answer with unnecessary theory.
 
-2. Analyze ONLY grammar that is actually relevant to the input.
-   Do not invent grammar points that are not present.
+ORGANIZATION:
 
-3. If it is a word:
-   - identify its grammatical form if possible
-   - explain its tense/form if relevant
-   - identify base form and other forms when useful
-   - mention possible grammatical interpretations if the word is ambiguous.
+Use only the sections that are actually useful for this particular input.
 
-4. If it is a phrase:
-   - explain its grammatical structure
-   - explain the important grammar pattern
-   - explain how the pattern is normally used.
+Possible sections:
 
-5. If it is a sentence:
-   Identify ALL important grammar found in it.
+<b>Grammar Point</b>
+Give the name of the main grammar rule.
 
-Possible areas include:
-- Present Simple
-- Present Continuous
-- Present Perfect
-- Present Perfect Continuous
-- Past Simple
-- Past Continuous
-- Past Perfect
-- Past Perfect Continuous
-- Future forms
-- Passive Voice
-- Active Voice
-- Modal verbs
-- Conditionals
-- Comparatives / superlatives
-- Articles
-- Prepositions
-- Gerunds
-- Infinitives
-- To + verb
-- Verb patterns
-- Relative clauses
-- Question structures
-- Negatives
-- Reported speech
-- Subject-verb agreement
-- Countable / uncountable nouns
-- Determiners
-- Conjunctions
-- Adverbs
-- Adjectives
-- Other relevant grammar.
+━━━━━━━━━━━━━━━━━━
 
-6. For EVERY important grammar rule you identify:
-   - give the rule name
-   - show the relevant structure/form
-   - explain it briefly in simple Arabic
-   - explain why it is used here
-   - give AT LEAST 3 new English examples
-   - give an Arabic translation for every example.
+<b>What is it?</b>
+Explain the rule simply.
 
-7. COMMON MISTAKES:
-   Include a "Common Mistakes" section ONLY when there is a genuinely
-   common mistake related to this word, phrase, structure, or sentence.
+<b>Structure</b>
+Show the grammatical structure clearly.
 
-   If there is a mistake in the user's sentence:
-   - show the incorrect form
-   - show the correct form
-   - explain why
-   - give several correct examples.
+<b>When do we use it?</b>
+Explain the important situations where it is used.
 
-   Do NOT invent mistakes merely to fill the section.
+<b>Examples</b>
+Give at least 3 useful new examples when a rule is being taught.
+Each example must have an Arabic translation.
 
-8. If the sentence is grammatically correct:
-   explicitly say that there are no important grammar mistakes.
+<b>Compare</b>
+Use this only when there is an important similar structure that learners commonly confuse with the target rule.
 
-9. If a word or sentence has more than one legitimate grammatical
-   interpretation, mention the alternatives instead of pretending
-   there is only one.
+<b>Common Mistakes</b>
+Use this only when there are genuine common mistakes related to the target grammar.
+Explain:
+- the incorrect form
+- the correct form
+- why it is wrong
+- additional examples
 
-10. Do not turn the response into a long grammar textbook.
-    Keep explanations concise but useful.
+<b>In this sentence</b>
+When the user gives a sentence, explain exactly how the grammar rule works inside that sentence.
 
-11. Do not use decorative Markdown stars.
-    Use clean headings and separators.
+Do NOT create empty sections.
 
-12. Important grammar terms should be bold.
+FORMATTING:
+- Use Telegram HTML.
+- Use <b>...</b> for important words, grammar names and key points.
+- NEVER use Markdown **bold**.
+- NEVER use Markdown *italic*.
+- Do not use decorative stars.
+- Use "•" for bullet points.
+- Use "━━━━━━━━━━━━━━━━━━" between major sections.
+- Keep the answer clean and easy to read on a phone.
+- Do not put everything in one huge paragraph.
+- Do not use tables unless a very small comparison genuinely requires one.
+- For grammatical structures, prefer simple notation such as:
+  Subject + have/has + past participle
+  Subject + be + past participle
+  If + past simple, would + base verb
 
-13. Use this general visual structure:
+EXAMPLES:
+Every important example should be written in English followed by its Arabic translation.
 
-╭━━━━━━━━━━━━━━━━━━━━╮
-        📘 GRAMMAR
-╰━━━━━━━━━━━━━━━━━━━━╯
+Example:
+<b>She has lived here for five years.</b>
+هي تعيش هنا منذ خمس سنوات.
 
-📝 INPUT
-
-━━━━━━━━━━━━━━━━━━━━
-
-🔎 GRAMMAR FOUND
-
-1️⃣ ...
-
-💡 Rule:
-...
-
-🧩 Structure:
-...
-
-📌 Why:
-...
-
-✍️ Examples:
-
-• ...
-  ...
-
-• ...
-  ...
-
-• ...
-  ...
-
-━━━━━━━━━━━━━━━━━━━━
-
-⚠️ COMMON MISTAKES
-
-❌ ...
-✅ ...
-
-💡 Why:
-...
-
-✍️ Examples:
-
-• ...
-  ...
-
-━━━━━━━━━━━━━━━━━━━━
-
-📌 SUMMARY
-
-...
-
-Use Arabic for explanations and English for English examples.
-Do not translate grammar terms unnecessarily.
+IMPORTANT:
+The answer must feel like a short grammar lesson connected directly to the user's input.
+Do not merely say "correct" or "incorrect" and stop.
 """
 
 
-# ============================================================
-# CALL AI
-# ============================================================
+# =========================================================
+# AI
+# =========================================================
 
-async def _ask_ai(prompt: str) -> str:
+async def _ask_ai(prompt: str):
     """
-    Call the AI function supplied by bot.py.
-
-    The existing free_ai function is expected to be async and
-    return a string.
+    Ask the injected AI function.
     """
-
     if _ai_function is None:
-        return (
-            "⚠️ Grammar AI is not connected yet.\n\n"
-            "Connect grammar.py to the existing free_ai function "
-            "in bot.py."
-        )
+        return None
 
     try:
         result = await _ai_function(prompt)
 
-        if result:
-            return str(result).strip()
+        if not result:
+            return None
 
-    except Exception:
-        pass
+        return str(result).strip()
 
-    return (
-        "⚠️ I couldn't analyze the grammar right now.\n"
-        "Please try again."
-    )
+    except Exception as e:
+        print(f"[GRAMMAR] AI error: {e}")
+        return None
 
 
-# ============================================================
-# GRAMMAR ANALYSIS
-# ============================================================
-
-async def analyze_grammar(text: str) -> str:
+async def analyze_grammar(text: str):
     """
-    Main grammar analysis function.
+    Analyze grammar using AI.
     """
-
     text = _clean_input(text)
 
     if not text:
-        return (
-            "📘 **Grammar**\n\n"
-            "Send me an English word, phrase, or sentence "
-            "to analyze its grammar."
-        )
+        return None
 
     prompt = build_grammar_prompt(text)
 
-    return await _ask_ai(prompt)
+    result = await _ask_ai(prompt)
+
+    return result
 
 
-# ============================================================
-# /grammar COMMAND
-# ============================================================
+# =========================================================
+# /grammar
+# =========================================================
 
 async def grammar_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Handles:
-
     /grammar
-    /grammar sentence here
+    /gram
+
+    Examples:
+    /grammar present perfect
+    /grammar I have lived here for five years.
+    /grammar
+
+    Or reply to a message:
+    /grammar
     """
 
     message = update.effective_message
@@ -350,116 +312,102 @@ async def grammar_command(
     if not message:
         return
 
-    text = " ".join(context.args).strip()
+    text = ""
 
-    # If there is no text after the command,
-    # try the replied message.
+    # First: command arguments
+    if context.args:
+        text = " ".join(context.args).strip()
+
+    # Second: replied message
     if not text:
         text = _get_reply_text(update) or ""
 
+    text = _clean_input(text)
+
     if not text:
         await message.reply_text(
-            "📘 **Grammar**\n\n"
-            "Send me a word, phrase, or sentence after the command.\n\n"
-            "Example:\n"
-            "`/grammar I have been studying English for two years.`\n\n"
-            "You can also reply to an English sentence with `/grammar`.",
-            parse_mode="Markdown",
+            "Use /grammar followed by a word, phrase, sentence, "
+            "or grammar rule.\n\n"
+            "You can also reply to a message with /grammar."
         )
         return
 
+    await message.chat.send_action("typing")
+
     result = await analyze_grammar(text)
 
-    await message.reply_text(
-        result,
-        parse_mode="HTML",
-    )
+    if not result:
+        await message.reply_text(
+            "I couldn't generate the grammar explanation. "
+            "Please try again."
+        )
+        return
+
+    await _reply_result(message, result)
 
 
-# ============================================================
+# =========================================================
 # ARABIC COMMANDS
-# ============================================================
-
-async def grammar_arabic_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    """
-    Handles:
-
-    قواعد
-    جرامر
-
-    It can also analyze a replied message.
-    """
-
-    message = update.effective_message
-
-    if not message:
-        return
-
-    text = " ".join(context.args).strip()
-
-    if not text:
-        text = _get_reply_text(update) or ""
-
-    if not text:
-        await message.reply_text(
-            "📘 Grammar\n\n"
-            "أرسل كلمة أو عبارة أو جملة إنجليزية لتحليل قواعدها.\n\n"
-            "ويمكنك أيضًا الرد على جملة وكتابة:\n"
-            "قواعد"
-        )
-        return
-
-    result = await analyze_grammar(text)
-
-    await message.reply_text(
-        result,
-        parse_mode="HTML",
-    )
-
-
-# ============================================================
-# REPLY SUPPORT
-# ============================================================
+# =========================================================
 
 async def grammar_reply_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Allows:
+    Arabic grammar commands:
 
-    Reply to an English message with:
     قواعد
     جرامر
+
+    Also accepts:
+    قواعد present perfect
+    جرامر I have been studying.
+    قواعد passive voice
+
+    And can be used as a reply.
     """
 
     message = update.effective_message
 
-    if not message:
+    if not message or not message.text:
         return
 
-    replied_text = _get_reply_text(update)
+    full_text = message.text.strip()
 
-    if not replied_text:
+    # Remove the command itself.
+    parts = full_text.split(maxsplit=1)
+
+    if len(parts) > 1:
+        text = parts[1].strip()
+    else:
+        text = _get_reply_text(update) or ""
+
+    text = _clean_input(text)
+
+    if not text:
         await message.reply_text(
-            "📘 لم أجد نصًا إنجليزيًا في الرسالة التي رددت عليها."
+            "اكتب كلمة أو جملة أو اسم قاعدة بعد «قواعد» أو «جرامر»، "
+            "أو استعمل الأمر كردّ على رسالة."
         )
         return
 
-    result = await analyze_grammar(replied_text)
+    await message.chat.send_action("typing")
 
-    await message.reply_text(
-        result,
-        parse_mode="HTML",
-    )
+    result = await analyze_grammar(text)
+
+    if not result:
+        await message.reply_text(
+            "تعذر إنشاء شرح القاعدة. حاول مرة أخرى."
+        )
+        return
+
+    await _reply_result(message, result)
 
 
-# ============================================================
-# REGISTER HANDLERS
-# ============================================================
+# =========================================================
+# REGISTRATION
+# =========================================================
 
 def register_grammar_handlers(application: Application):
     """
@@ -476,12 +424,20 @@ def register_grammar_handlers(application: Application):
         )
     )
 
-    # Arabic commands
+    # Arabic:
+    # قواعد
+    # جرامر
+    # قواعد present perfect
+    # جرامر passive voice
     application.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND
-            & filters.Regex(r"^(قواعد|جرامر)$"),
+            & filters.Regex(
+                r"^(?:قواعد|جرامر)(?:\s+.+)?$"
+            ),
             grammar_reply_command,
         )
-  )
+    )
+
+    print("[GRAMMAR] handlers registered successfully.")
