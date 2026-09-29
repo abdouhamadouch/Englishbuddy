@@ -1056,4 +1056,4 @@ def register_grammar_handlers(application: Application):
 
     print(
         "[GRAMMAR] handlers registered successfully."
-    )
+        )
