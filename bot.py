@@ -1987,87 +1987,100 @@ async def name_reaction(update, context):
 # HELP
 # =========================================================
 HELP_TEXT = """
-📚 <b>FixMyEnglish — Commands</b>
+📚 <b>FixMyEnglish — Help</b>
 
-🌍 <b>Language</b>
-/tr text — ترجمة
-/cor text — تصحيح الإنجليزية
-/ex word — شرح الكلمة
-/use word — توظيف الكلمة في جملة
+━━━━━━━━━━━━━━━━━━
+🌍 <b>English Tools</b>
 
+/tr        ━━━━━━━━━━━━━  ترجمة
+/cor       ━━━━━━━━━━━━━  تصحيح الإنجليزية
+/ex        ━━━━━━━━━━━━━  شرح الكلمة
+/use       ━━━━━━━━━━━━━  توظيف الكلمة في جملة
+/grammar   ━━━━━━━━━━━━━  تحليل القواعد
+
+━━━━━━━━━━━━━━━━━━
 🔎 <b>Word Analysis</b>
-/analysis word
-/analys word
-تحليل word
 
-تحليل الكلمة يعطيك نظرة شاملة عنها مع أزرار للمزيد من التفاصيل.
+/analysis  ━━━━━━━━━━━━━  تحليل شامل للكلمة
+/analys    ━━━━━━━━━━━━━  اختصار التحليل
+تحليل      ━━━━━━━━━━━━━  تحليل الكلمة
 
+━━━━━━━━━━━━━━━━━━
 🌱 <b>Word Structure</b>
-/root word — جذر الكلمة
-/fw word — عائلة الكلمة
-/syn word — المرادفات
-/ant word — الأضداد
-/levels word — المرادفات حسب مستوى CEFR
 
-📝 <b>Pronunciation & IPA</b>
-/ipaus text — IPA أمريكي
-/ipauk text — IPA بريطاني
-/us word — النطق الأمريكي
-/uk word — النطق البريطاني
-/pr word — النطق الأمريكي والبريطاني
+/root      ━━━━━━━━━━━━━  جذر الكلمة
+/fw        ━━━━━━━━━━━━━  عائلة الكلمة
+/syn       ━━━━━━━━━━━━━  المرادفات
+/ant       ━━━━━━━━━━━━━  الأضداد
+/levels    ━━━━━━━━━━━━━  مستويات CEFR
 
-🇩🇿 <b>Arabic Commands</b>
-ترجم — ترجمة
-صحح — تصحيح
-اشرح — شرح
-تحليل — تحليل كلمة
-جذر — جذر الكلمة
-عائلة — عائلة الكلمة
-مرادف — مرادفات
-ضد — أضداد
-وظف — توظيف الكلمة
-امريكي — نطق أمريكي
-بريطاني — نطق بريطاني
-انطق — النطق الأمريكي والبريطاني
+━━━━━━━━━━━━━━━━━━
+🗣 <b>Pronunciation & IPA</b>
 
+/us        ━━━━━━━━━━━━━  النطق الأمريكي
+/uk        ━━━━━━━━━━━━━  النطق البريطاني
+/pr        ━━━━━━━━━━━━━  النطق الأمريكي والبريطاني
+/ipaus     ━━━━━━━━━━━━━  IPA أمريكي
+/ipauk     ━━━━━━━━━━━━━  IPA بريطاني
+
+━━━━━━━━━━━━━━━━━━
 🤖 <b>AI & Conversation</b>
-/ai your request — اسأل الذكاء الاصطناعي
-/talk — Talk Mode
-تكلم — Talk Mode
 
+/ai        ━━━━━━━━━━━━━  اسأل الذكاء الاصطناعي
+/talk      ━━━━━━━━━━━━━  وضع المحادثة
+تكلم       ━━━━━━━━━━━━━  وضع المحادثة
+
+━━━━━━━━━━━━━━━━━━
 📚 <b>Vocabulary</b>
-/vocab — الكلمات المحفوظة
 
-⚙️ <b>Group Auto Correction</b>
-/on — تشغيل التصحيح التلقائي
-/off — إيقاف التصحيح التلقائي
+/vocab     ━━━━━━━━━━━━━  الكلمات المحفوظة
 
+━━━━━━━━━━━━━━━━━━
+🎵 <b>Media</b>
+
+/download  ━━━━━━━━━━━━━  تحميل الوسائط
+/play      ━━━━━━━━━━━━━  تشغيل الوسائط
+/pause     ━━━━━━━━━━━━━  إيقاف مؤقت
+/resume    ━━━━━━━━━━━━━  متابعة التشغيل
+/skip      ━━━━━━━━━━━━━  المقطع التالي
+/stop      ━━━━━━━━━━━━━  إيقاف التشغيل
+
+━━━━━━━━━━━━━━━━━━
+⚙️ <b>Group Settings</b>
+
+/on        ━━━━━━━━━━━━━  تشغيل التصحيح التلقائي
+/off       ━━━━━━━━━━━━━  إيقاف التصحيح التلقائي
+
+━━━━━━━━━━━━━━━━━━
 💬 <b>Reply Mode</b>
-يمكنك الرد على أي رسالة تحتوي على كلمة ثم إرسال الأمر بدون كتابة الكلمة:
 
-/tr
-/cor
-/ex
-/analysis
-/analys
-/root
-/fw
-/syn
-/ant
-/levels
-/use
-/ipaus
-/ipauk
-/us
-/uk
-/pr
+يمكنك الرد على أي رسالة ثم استخدام الأمر
+بدون كتابة الكلمة أو النص مرة أخرى.
 
-أو:
-تحليل
+/tr        ━━━━━━━━━━━━━  ترجم
+/cor       ━━━━━━━━━━━━━  صحح
+/ex        ━━━━━━━━━━━━━  اشرح
+/grammar   ━━━━━━━━━━━━━  قواعد
+/analysis  ━━━━━━━━━━━━━  تحليل
+/analys    ━━━━━━━━━━━━━  تحليل
+/root      ━━━━━━━━━━━━━  جذر
+/fw        ━━━━━━━━━━━━━  عائلة
+/syn       ━━━━━━━━━━━━━  مرادف
+/ant       ━━━━━━━━━━━━━  ضد
+/levels    ━━━━━━━━━━━━━  مستويات
+/use       ━━━━━━━━━━━━━  وظف
+/us        ━━━━━━━━━━━━━  أمريكي
+/uk        ━━━━━━━━━━━━━  بريطاني
+/pr        ━━━━━━━━━━━━━  انطق
+/ipaus     ━━━━━━━━━━━━━  فوناتيك أمريكي
+/ipauk     ━━━━━━━━━━━━━  فوناتيك بريطاني
 
-سيتم تطبيق الأمر على الكلمة الموجودة في الرسالة التي رددت عليها.
+━━━━━━━━━━━━━━━━━━
+💡 <b>Tip</b>
+
+يمكنك استخدام الأوامر مباشرة مع الكلمة،
+أو الرد على رسالة وكتابة الأمر فقط.
 """
-
 
 
 # =========================================================
@@ -2104,28 +2117,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please wait for approval."
         )
 
-        await notify_owner(
-            update,
-            user,
-        )
-
-        return
-
-    await update.effective_message.reply_text(
-        "👋 Welcome to <b>FixMyEnglish Pro</b>!\n\n"
-        "🌍 Translation\n"
-        "✍️ English correction\n"
-        "📖 Word explanations\n"
-        "🔄 Synonyms & antonyms\n"
-        "🧩 Word usage\n"
-        "🇺🇸 American pronunciation\n"
-        "🇬🇧 British pronunciation\n"
-        "🔊 Pronunciation audio\n"
-        "🤖 AI assistant\n"
-        "💬 Talk mode (/talk)\n\n"
-        "📚 Send /help to see all commands.",
-        parse_mode="HTML",
-    )
+await update.effective_message.reply_text(
+    "👋 <b>Welcome to FixMyEnglish Pro!</b>\n\n"
+    "Your personal English learning assistant — designed to help you "
+    "understand, practice, and improve your English every day.\n\n"
+    "━━━━━━━━━━━━━━━━━━\n"
+    "🌍 <b>Learn</b>\n"
+    "Translation, word meanings, synonyms, antonyms, and word families.\n\n"
+    "✍️ <b>Improve</b>\n"
+    "English correction, grammar analysis, and natural word usage.\n\n"
+    "🗣 <b>Speak</b>\n"
+    "American & British pronunciation, IPA, and pronunciation audio.\n\n"
+    "🔎 <b>Explore</b>\n"
+    "Deep word analysis, roots, CEFR levels, and useful word relations.\n\n"
+    "🤖 <b>Practice</b>\n"
+    "AI assistance and Talk Mode for interactive English practice.\n\n"
+    "🎵 <b>More</b>\n"
+    "Media tools for downloading and playing supported content.\n\n"
+    "━━━━━━━━━━━━━━━━━━\n"
+    "💡 <b>Getting Started</b>\n\n"
+    "Use <b>/help</b> to see all available commands.\n\n"
+    "You can also reply to a message and use many commands "
+    "without typing the word again.\n\n"
+    "📚 <b>Learn consistently. Improve naturally.</b>",
+    parse_mode="HTML",
+)
 
 
 async def help_command(update, context):
