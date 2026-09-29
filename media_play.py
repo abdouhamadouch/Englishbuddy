@@ -1,52 +1,34 @@
 # media_play.py
-# FixMyEnglish - Voice Chat Player
-#
-# Features:
-# - Audio / Video queue
-# - Arabic + English commands
-# - Per-group queues
-# - Owner of a queued item can control his own item
-# - Group admins can control everything
-# - Inline English control buttons
-# - Pause / Resume / Skip / Stop
-# - Repeat One / Repeat All
-# - Shuffle
-# - Queue / Now Playing
-# - Mute / Unmute
-# - Volume
-# - Clear queue
-# - Leave voice chat
-#
-# IMPORTANT:
-# The actual Telegram Voice Chat connection is intentionally
-# isolated in VoiceEngine below. It will be connected to the
-# MTProto/PyTgCalls client when bot.py is integrated.
-
-from __future__ import annotations
+# FixMyEnglish - Telegram Voice Chat Media Player
 
 import asyncio
-import random
+import html
+import os
+import re
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update,
-)
-from telegram.constants import ParseMode
-from telegram.ext import (
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from pyrogram import Client
+from pytgcalls import PyTgCalls, filters as fl
+from pytgcalls.types import StreamEnded
 
 
-# ============================================================
-# Data
-# ============================================================
+# =========================================================
+# CONFIG
+# =========================================================
+
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+SESSION_STRING = os.getenv("SESSION_STRING")
+
+if API_ID:
+    API_ID = int(API_ID)
+
+
+# =========================================================
+# DATA
+# =========================================================
 
 @dataclass
 class QueueItem:
@@ -55,35 +37,82 @@ class QueueItem:
     user_id: int
     username: str
     title: str
-    media_type: str          # audio / video
+    media_type: str
     file_id: str
     repeatable: bool = True
+    temp_path: Optional[str] = None
 
 
 @dataclass
 class PlayerState:
-    queue: list[QueueItem] = field(default_factory=list)
+    queue: list = field(default_factory=list)
     current: Optional[QueueItem] = None
 
     paused: bool = False
     muted: bool = False
+
     volume: int = 100
+    previous_volume: int = 100
 
-    # off / one / all
     repeat_mode: str = "off"
-
     control_message_id: Optional[int] = None
 
     playing: bool = False
+    starting: bool = False
 
 
-# Every Telegram group has its own player.
-PLAYERS: dict[int, PlayerState] = {}
+PLAYERS = {}
+
+APPLICATION = None
+
+USER_CLIENT = None
+CALLS = None
+
+ENGINE_LOCK = asyncio.Lock()
 
 
-# ============================================================
-# Player state
-# ============================================================
+# =========================================================
+# COMMANDS
+# =========================================================
+
+COMMANDS = {
+    "play",
+    "video",
+    "pause",
+    "resume",
+    "skip",
+    "next",
+    "stop",
+    "leave",
+    "queue",
+    "now",
+    "repeat",
+    "shuffle",
+    "clear",
+    "mute",
+    "unmute",
+
+    "شغل",
+    "تشغيل",
+    "فيديو",
+    "وقف",
+    "كمل",
+    "تالي",
+    "وقفه",
+    "انهاء",
+    "قائمة",
+    "الآن",
+    "كرر",
+    "خلط",
+    "مسح",
+    "كتم",
+    "صوت",
+}
+
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 def get_player(chat_id: int) -> PlayerState:
     if chat_id not in PLAYERS:
@@ -92,541 +121,882 @@ def get_player(chat_id: int) -> PlayerState:
     return PLAYERS[chat_id]
 
 
-def clear_player(chat_id: int):
-    PLAYERS.pop(chat_id, None)
+def is_admin(user) -> bool:
+    if not user:
+        return False
+
+    return (
+        getattr(user, "status", None)
+        in ("administrator", "creator")
+    )
 
 
-# ============================================================
-# Voice Engine
-# ============================================================
-
-class VoiceEngine:
-    """
-    Voice Chat abstraction.
-
-    This class is deliberately separated from the queue logic.
-
-    Later bot.py will initialize it with the actual PyTgCalls
-    instance.
-
-    Required operations:
-
-        join(chat_id)
-        play(chat_id, file_path, media_type)
-        pause(chat_id)
-        resume(chat_id)
-        stop(chat_id)
-        mute(chat_id)
-        unmute(chat_id)
-        set_volume(chat_id, volume)
-        leave(chat_id)
-    """
-
-    def __init__(self):
-        self.client = None
-
-    async def join(self, chat_id: int):
-        """
-        Join an existing Voice Chat.
-
-        The real PyTgCalls implementation will be connected here.
-        """
-        raise NotImplementedError(
-            "VoiceEngine.join() must be connected to PyTgCalls."
+async def check_admin(update) -> bool:
+    try:
+        member = await update.effective_chat.get_member(
+            update.effective_user.id
         )
 
-    async def play(
-        self,
-        chat_id: int,
-        file_path: str,
-        media_type: str,
-    ):
-        """
-        Start audio/video playback.
-        """
-        raise NotImplementedError(
-            "VoiceEngine.play() must be connected to PyTgCalls."
+        return member.status in (
+            "administrator",
+            "creator",
         )
 
-    async def pause(self, chat_id: int):
-        raise NotImplementedError
+    except Exception:
+        return False
 
-    async def resume(self, chat_id: int):
-        raise NotImplementedError
 
-    async def stop(self, chat_id: int):
-        raise NotImplementedError
+def display_name(user) -> str:
+    if not user:
+        return "Unknown"
 
-    async def mute(self, chat_id: int):
-        raise NotImplementedError
+    if getattr(user, "username", None):
+        return f"@{user.username}"
 
-    async def unmute(self, chat_id: int):
-        raise NotImplementedError
+    name = getattr(user, "first_name", None)
 
-    async def set_volume(
-        self,
-        chat_id: int,
-        volume: int,
+    if name:
+        return name
+
+    return str(getattr(user, "id", "Unknown"))
+
+
+def clean_title(message) -> str:
+    if getattr(message, "audio", None):
+        return (
+            message.audio.title
+            or message.audio.file_name
+            or "Audio"
+        )
+
+    if getattr(message, "video", None):
+        return (
+            message.video.file_name
+            or "Video"
+        )
+
+    if getattr(message, "voice", None):
+        return "Voice"
+
+    if getattr(message, "document", None):
+        return (
+            message.document.file_name
+            or "Media"
+        )
+
+    return "Media"
+
+
+def get_media_info(message):
+    if message.audio:
+        return (
+            "audio",
+            message.audio.file_id,
+        )
+
+    if message.video:
+        return (
+            "video",
+            message.video.file_id,
+        )
+
+    if message.voice:
+        return (
+            "audio",
+            message.voice.file_id,
+        )
+
+    if message.document:
+        mime = (
+            message.document.mime_type
+            or ""
+        ).lower()
+
+        if mime.startswith("video/"):
+            return (
+                "video",
+                message.document.file_id,
+            )
+
+        if mime.startswith("audio/"):
+            return (
+                "audio",
+                message.document.file_id,
+            )
+
+    return None, None
+
+
+def escape(text) -> str:
+    return html.escape(str(text))
+
+
+# =========================================================
+# USER CLIENT / PYTGCALLS
+# =========================================================
+
+async def ensure_engine():
+    global USER_CLIENT
+    global CALLS
+
+    if CALLS is not None:
+        return CALLS
+
+    async with ENGINE_LOCK:
+
+        if CALLS is not None:
+            return CALLS
+
+        if not API_ID:
+            raise RuntimeError(
+                "API_ID is missing."
+            )
+
+        if not API_HASH:
+            raise RuntimeError(
+                "API_HASH is missing."
+            )
+
+        if not SESSION_STRING:
+            raise RuntimeError(
+                "SESSION_STRING is missing."
+            )
+
+        USER_CLIENT = Client(
+            "fixmyenglish_player",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=SESSION_STRING,
+        )
+
+        await USER_CLIENT.start()
+
+        CALLS = PyTgCalls(USER_CLIENT)
+
+        CALLS.start()
+
+        register_stream_events()
+
+    return CALLS
+
+
+# =========================================================
+# STREAM END
+# =========================================================
+
+def register_stream_events():
+
+    @CALLS.on_update(fl.stream_end())
+    async def stream_end_handler(
+        _,
+        update: StreamEnded,
     ):
-        raise NotImplementedError
+        chat_id = update.chat_id
 
-    async def leave(self, chat_id: int):
-        raise NotImplementedError
+        try:
+            await handle_stream_end(chat_id)
+        except Exception as e:
+            print(
+                f"[MEDIA PLAY] stream_end error: {e}"
+            )
 
 
-voice_engine = VoiceEngine()
+async def handle_stream_end(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state:
+        return
+
+    current = state.current
+
+    if not current:
+        return
+
+    # Remove temporary file
+    remove_temp_file(current)
+
+    # Repeat ONE
+    if state.repeat_mode == "one":
+        state.playing = False
+        state.paused = False
+
+        await start_current(chat_id)
+        return
+
+    # Repeat ALL
+    if state.repeat_mode == "all":
+        state.queue.append(current)
+
+    # Next item
+    if state.queue:
+
+        state.current = state.queue.pop(0)
+        state.playing = False
+        state.paused = False
+
+        await start_current(chat_id)
+        return
+
+    # Finished
+    state.current = None
+    state.playing = False
+    state.paused = False
+
+    try:
+        await CALLS.leave_call(chat_id)
+    except Exception:
+        pass
+
+    await update_control_message(chat_id)
 
 
-# ============================================================
-# UI
-# ============================================================
+# =========================================================
+# FILE DOWNLOAD
+# =========================================================
 
-def player_keyboard(
-    state: PlayerState,
-) -> InlineKeyboardMarkup:
+async def download_media_for_play(
+    item: QueueItem,
+) -> str:
 
-    repeat_text = {
-        "off": "🔁 Repeat",
-        "one": "🔂 Repeat One",
-        "all": "🔁 Repeat All",
-    }.get(state.repeat_mode, "🔁 Repeat")
+    await ensure_engine()
 
-    mute_text = (
+    # The MTProto user account downloads the message.
+    # This avoids relying only on Bot API file downloads.
+    message = await USER_CLIENT.get_messages(
+        item.chat_id,
+        item.message_id,
+    )
+
+    if not message:
+        raise RuntimeError(
+            "The original media message could not be found."
+        )
+
+    folder = tempfile.gettempdir()
+
+    prefix = (
+        f"fixmyenglish_{item.chat_id}_"
+        f"{item.message_id}_"
+    )
+
+    path = await USER_CLIENT.download_media(
+        message,
+        file_name=os.path.join(
+            folder,
+            prefix,
+        ),
+    )
+
+    if not path:
+        raise RuntimeError(
+            "Telegram did not return a media file."
+        )
+
+    return path
+
+
+def remove_temp_file(item: Optional[QueueItem]):
+
+    if not item:
+        return
+
+    path = item.temp_path
+
+    if not path:
+        return
+
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        print(
+            f"[MEDIA PLAY] temp cleanup error: {e}"
+        )
+
+    item.temp_path = None
+
+
+# =========================================================
+# START CURRENT
+# =========================================================
+
+async def start_current(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state or not state.current:
+        return
+
+    if state.starting:
+        return
+
+    state.starting = True
+
+    item = state.current
+
+    try:
+
+        await ensure_engine()
+
+        # Remove previous temporary file
+        remove_temp_file(item)
+
+        path = await download_media_for_play(item)
+
+        item.temp_path = path
+
+        state.playing = True
+        state.paused = False
+
+        await CALLS.play(
+            chat_id,
+            path,
+        )
+
+        # Restore volume
+        try:
+            await CALLS.change_volume_call(
+                chat_id,
+                state.volume,
+            )
+        except Exception:
+            pass
+
+        await update_control_message(chat_id)
+
+    except Exception as e:
+
+        print(
+            f"[MEDIA PLAY] playback error: {e}"
+        )
+
+        remove_temp_file(item)
+
+        state.playing = False
+        state.paused = False
+
+        if state.queue:
+            state.current = state.queue.pop(0)
+
+            await start_current(chat_id)
+
+        else:
+            state.current = None
+
+            try:
+                await send_message(
+                    chat_id,
+                    "❌ تعذر تشغيل الملف."
+                )
+            except Exception:
+                pass
+
+        return
+
+    finally:
+        state.starting = False
+
+
+# =========================================================
+# CONTROL MESSAGE
+# =========================================================
+
+def control_keyboard(state: PlayerState):
+
+    if state.paused:
+        pause_button = "▶️ Resume"
+        pause_data = "mp_resume"
+    else:
+        pause_button = "⏸ Pause"
+        pause_data = "mp_pause"
+
+    mute_button = (
         "🔊 Unmute"
         if state.muted
         else "🔇 Mute"
     )
 
-    pause_text = (
-        "▶️ Resume"
-        if state.paused
-        else "⏸ Pause"
+    mute_data = (
+        "mp_unmute"
+        if state.muted
+        else "mp_mute"
     )
 
-    keyboard = [
+    return [
         [
-            InlineKeyboardButton(
-                pause_text,
-                callback_data="mp_pause",
-            ),
-            InlineKeyboardButton(
-                "⏭ Skip",
-                callback_data="mp_skip",
-            ),
+            {
+                "text": pause_button,
+                "callback_data": pause_data,
+            },
+            {
+                "text": "⏭ Skip",
+                "callback_data": "mp_skip",
+            },
         ],
         [
-            InlineKeyboardButton(
-                repeat_text,
-                callback_data="mp_repeat",
-            ),
-            InlineKeyboardButton(
-                "🔀 Shuffle",
-                callback_data="mp_shuffle",
-            ),
+            {
+                "text": "🔁 Repeat",
+                "callback_data": "mp_repeat",
+            },
+            {
+                "text": "🔀 Shuffle",
+                "callback_data": "mp_shuffle",
+            },
         ],
         [
-            InlineKeyboardButton(
-                "📋 Queue",
-                callback_data="mp_queue",
-            ),
-            InlineKeyboardButton(
-                "🎵 Now",
-                callback_data="mp_now",
-            ),
+            {
+                "text": "📋 Queue",
+                "callback_data": "mp_queue",
+            },
+            {
+                "text": "🎵 Now",
+                "callback_data": "mp_now",
+            },
         ],
         [
-            InlineKeyboardButton(
-                "🔉 -10",
-                callback_data="mp_vol_down",
-            ),
-            InlineKeyboardButton(
-                f"🔊 {state.volume}%",
-                callback_data="mp_volume",
-            ),
-            InlineKeyboardButton(
-                "🔊 +10",
-                callback_data="mp_vol_up",
-            ),
+            {
+                "text": "🔉 -10",
+                "callback_data": "mp_vol_down",
+            },
+            {
+                "text": f"🔊 {state.volume}%",
+                "callback_data": "mp_volume",
+            },
+            {
+                "text": "🔊 +10",
+                "callback_data": "mp_vol_up",
+            },
         ],
         [
-            InlineKeyboardButton(
-                mute_text,
-                callback_data="mp_mute",
-            ),
-            InlineKeyboardButton(
-                "⏹ Stop",
-                callback_data="mp_stop",
-            ),
+            {
+                "text": mute_button,
+                "callback_data": mute_data,
+            },
         ],
         [
-            InlineKeyboardButton(
-                "🗑 Clear",
-                callback_data="mp_clear",
-            ),
-            InlineKeyboardButton(
-                "🚪 Leave",
-                callback_data="mp_leave",
-            ),
+            {
+                "text": "⏹ Stop",
+                "callback_data": "mp_stop",
+            },
+            {
+                "text": "🗑 Clear",
+                "callback_data": "mp_clear",
+            },
+            {
+                "text": "🚪 Leave",
+                "callback_data": "mp_leave",
+            },
         ],
     ]
 
-    return InlineKeyboardMarkup(keyboard)
+
+def make_keyboard(state: PlayerState):
+
+    from telegram import InlineKeyboardButton
+    from telegram import InlineKeyboardMarkup
+
+    rows = []
+
+    for row in control_keyboard(state):
+
+        rows.append([
+            InlineKeyboardButton(
+                x["text"],
+                callback_data=x["callback_data"],
+            )
+            for x in row
+        ])
+
+    return InlineKeyboardMarkup(rows)
 
 
-# ============================================================
-# Display
-# ============================================================
+def player_text(state: PlayerState):
 
-def player_text(
-    state: PlayerState,
-) -> str:
+    if not state.current:
 
-    if state.current is None:
         return (
-            "╭━━━━━━━━━━━━━━━━━━━━╮\n"
-            "       🎵 PLAYER\n"
-            "╰━━━━━━━━━━━━━━━━━━━━╯\n\n"
-            "⏹ Nothing is playing.\n"
+            "🎵 <b>Media Player</b>\n\n"
+            "No media is playing."
         )
 
     current = state.current
 
-    status = "⏸ PAUSED" if state.paused else "▶️ PLAYING"
+    repeat_text = {
+        "off": "Off",
+        "one": "One",
+        "all": "All",
+    }.get(
+        state.repeat_mode,
+        "Off",
+    )
+
+    status = (
+        "⏸ Paused"
+        if state.paused
+        else "▶️ Playing"
+    )
 
     queue_count = len(state.queue)
 
     return (
-        "╭━━━━━━━━━━━━━━━━━━━━╮\n"
-        "       🎵 NOW PLAYING\n"
-        "╰━━━━━━━━━━━━━━━━━━━━╯\n\n"
-        f"{status}\n\n"
-        f"{'🎬' if current.media_type == 'video' else '🎵'} "
-        f"<b>{escape(current.title)}</b>\n"
-        f"👤 {escape(current.username)}\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📋 Queue: <b>{queue_count}</b>\n"
-        f"🔊 Volume: <b>{state.volume}%</b>\n"
-        f"🔁 Repeat: <b>{state.repeat_mode}</b>"
+        "🎵 <b>Media Player</b>\n\n"
+        f"<b>Title:</b> "
+        f"{escape(current.title)}\n"
+        f"<b>Type:</b> "
+        f"{escape(current.media_type)}\n"
+        f"<b>By:</b> "
+        f"{escape(current.username)}\n\n"
+        f"<b>Status:</b> {status}\n"
+        f"<b>Volume:</b> {state.volume}%\n"
+        f"<b>Repeat:</b> {repeat_text}\n"
+        f"<b>Queue:</b> {queue_count}"
     )
 
 
-def escape(value: str) -> str:
-    return (
-        value
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+async def update_control_message(chat_id: int):
 
+    if not APPLICATION:
+        return
 
-# ============================================================
-# Permissions
-# ============================================================
+    state = PLAYERS.get(chat_id)
 
-async def is_admin(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    user_id: int,
-) -> bool:
+    if not state:
+        return
 
-    chat = update.effective_chat
+    message_id = state.control_message_id
 
-    if not chat:
-        return False
+    if not message_id:
+        return
 
     try:
-        member = await context.bot.get_chat_member(
-            chat.id,
-            user_id,
+
+        await APPLICATION.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=player_text(state),
+            parse_mode="HTML",
+            reply_markup=make_keyboard(state),
         )
 
-        return member.status in {
-            "administrator",
-            "creator",
-        }
+    except Exception as e:
 
-    except Exception:
-        return False
+        print(
+            f"[MEDIA PLAY] control edit error: {e}"
+        )
 
 
-async def can_control_item(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    item: Optional[QueueItem],
-) -> bool:
+async def send_control_message(chat_id: int):
 
-    if not item:
-        return False
+    if not APPLICATION:
+        return
+
+    state = PLAYERS.get(chat_id)
+
+    if not state:
+        return
+
+    try:
+
+        message = await APPLICATION.bot.send_message(
+            chat_id=chat_id,
+            text=player_text(state),
+            parse_mode="HTML",
+            reply_markup=make_keyboard(state),
+        )
+
+        state.control_message_id = message.message_id
+
+    except Exception as e:
+
+        print(
+            f"[MEDIA PLAY] control message error: {e}"
+        )
+
+
+async def send_message(
+    chat_id: int,
+    text: str,
+):
+
+    if not APPLICATION:
+        return
+
+    await APPLICATION.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+    )
+
+
+# =========================================================
+# QUEUE
+# =========================================================
+
+async def add_to_queue(
+    update,
+    force_video=False,
+):
+
+    message = update.effective_message
+
+    if not message.reply_to_message:
+
+        await message.reply_text(
+            "↩️ ردّ على ملف صوتي أو فيديو ثم اكتب:\n"
+            "<code>شغل</code>"
+        )
+
+        return
+
+    replied = message.reply_to_message
+
+    media_type, file_id = get_media_info(
+        replied
+    )
+
+    if not file_id:
+
+        await message.reply_text(
+            "❌ الرسالة التي رددت عليها ليست ملفًا "
+            "صوتيًا أو فيديو قابلًا للتشغيل."
+        )
+
+        return
+
+    if force_video and media_type != "video":
+
+        await message.reply_text(
+            "❌ أمر <code>فيديو</code> يحتاج إلى "
+            "فيديو."
+        )
+
+        return
 
     user = update.effective_user
 
-    if not user:
-        return False
+    username = display_name(user)
 
-    if user.id == item.user_id:
-        return True
-
-    return await is_admin(
-        update,
-        context,
-        user.id,
+    item = QueueItem(
+        chat_id=update.effective_chat.id,
+        message_id=replied.message_id,
+        user_id=user.id,
+        username=username,
+        title=clean_title(replied),
+        media_type=media_type,
+        file_id=file_id,
     )
 
+    chat_id = update.effective_chat.id
 
-# ============================================================
-# Queue
-# ============================================================
+    state = get_player(chat_id)
 
-async def add_to_queue(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    item: QueueItem,
-):
-    chat = update.effective_chat
+    # Nothing playing
+    if not state.current:
 
-    if not chat:
-        return
-
-    state = get_player(chat.id)
-
-    if state.current is None:
         state.current = item
-        state.playing = True
+        state.playing = False
 
-        await start_current(
-            update,
-            context,
+        await message.reply_text(
+            f"▶️ <b>Starting:</b> "
+            f"{escape(item.title)}"
         )
+
+        await start_current(chat_id)
+
+        if state.current:
+            await send_control_message(chat_id)
+
         return
 
+    # Queue
     state.queue.append(item)
 
-    await update.effective_message.reply_text(
-        "📋 Added to queue:\n\n"
-        f"{'🎬' if item.media_type == 'video' else '🎵'} "
-        f"<b>{escape(item.title)}</b>\n\n"
-        f"Position: <b>{len(state.queue)}</b>",
-        parse_mode=ParseMode.HTML,
+    position = len(state.queue)
+
+    await message.reply_text(
+        "➕ <b>Added to queue</b>\n\n"
+        f"{escape(item.title)}\n"
+        f"Position: {position}"
     )
 
+    await update_control_message(chat_id)
 
-async def start_current(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+
+# =========================================================
+# PAUSE / RESUME
+# =========================================================
+
+async def pause_player(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state or not state.current:
+        return False
+
+    if state.paused:
+        return True
+
+    try:
+
+        await ensure_engine()
+
+        await CALLS.pause(chat_id)
+
+        state.paused = True
+
+        await update_control_message(chat_id)
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[MEDIA PLAY] pause error: {e}"
+        )
+
+        return False
+
+
+async def resume_player(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state or not state.current:
+        return False
+
+    if not state.paused:
+        return True
+
+    try:
+
+        await ensure_engine()
+
+        await CALLS.resume(chat_id)
+
+        state.paused = False
+
+        await update_control_message(chat_id)
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[MEDIA PLAY] resume error: {e}"
+        )
+
+        return False
+
+
+# =========================================================
+# STOP / LEAVE
+# =========================================================
+
+async def stop_player(
+    chat_id: int,
+    clear_queue=False,
 ):
-    chat = update.effective_chat
 
-    if not chat:
-        return
+    state = PLAYERS.get(chat_id)
 
-    state = get_player(chat.id)
-
-    if not state.current:
+    if not state:
         return
 
     current = state.current
 
-    try:
-        await voice_engine.join(chat.id)
-
-        await voice_engine.play(
-            chat.id,
-            current.file_id,
-            current.media_type,
-        )
-
-    except NotImplementedError:
-        await update.effective_message.reply_text(
-            "⚠️ Voice Engine is not connected yet.\n\n"
-            "PyTgCalls/MTProto must be initialized before "
-            "actual Voice Chat playback can start."
-        )
-        return
-
-    except Exception as exc:
-        await update.effective_message.reply_text(
-            "⚠️ Could not start playback.\n\n"
-            f"<code>{escape(str(exc))}</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    await send_or_update_player(
-        update,
-        context,
-    )
-
-
-# ============================================================
-# Next
-# ============================================================
-
-async def play_next(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    chat = update.effective_chat
-
-    if not chat:
-        return
-
-    state = get_player(chat.id)
-
-    if state.current:
-        if state.repeat_mode == "one":
-            await start_current(
-                update,
-                context,
-            )
-            return
-
-    if state.queue:
-        state.current = state.queue.pop(0)
-        state.paused = False
-        state.muted = False
-
-        await start_current(
-            update,
-            context,
-        )
-        return
-
-    if state.repeat_mode == "all" and state.current:
-        # Repeat-all with one current item and no queue.
-        await start_current(
-            update,
-            context,
-        )
-        return
-
-    state.playing = False
+    # Clear current first so stream_end won't
+    # automatically start another item.
     state.current = None
-
-    await update.effective_message.reply_text(
-        "✅ Queue finished."
-    )
-
-
-# ============================================================
-# Queue display
-# ============================================================
-
-def queue_text(
-    state: PlayerState,
-) -> str:
-
-    if not state.queue:
-        return (
-            "📋 <b>QUEUE</b>\n\n"
-            "Queue is empty."
-        )
-
-    lines = [
-        "📋 <b>QUEUE</b>",
-        "",
-    ]
-
-    for index, item in enumerate(
-        state.queue,
-        start=1,
-    ):
-        icon = (
-            "🎬"
-            if item.media_type == "video"
-            else "🎵"
-        )
-
-        lines.append(
-            f"<b>{index}.</b> {icon} "
-            f"{escape(item.title)}"
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# Control operations
-# ============================================================
-
-async def pause_player(
-    update: Update,
-):
-    chat = update.effective_chat
-
-    if not chat:
-        return
-
-    state = get_player(chat.id)
-
-    if not state.current:
-        return
-
-    await voice_engine.pause(chat.id)
-
-    state.paused = True
-
-
-async def resume_player(
-    update: Update,
-):
-    chat = update.effective_chat
-
-    if not chat:
-        return
-
-    state = get_player(chat.id)
-
-    if not state.current:
-        return
-
-    await voice_engine.resume(chat.id)
-
+    state.playing = False
     state.paused = False
 
+    if clear_queue:
+        state.queue.clear()
 
-async def stop_player(
-    update: Update,
-):
-    chat = update.effective_chat
+    try:
 
-    if not chat:
-        return
+        if CALLS:
+            await CALLS.leave_call(chat_id)
 
-    state = get_player(chat.id)
+    except Exception:
+        pass
 
-    if not state.current:
-        return
+    remove_temp_file(current)
 
-    await voice_engine.stop(chat.id)
+    state.control_message_id = None
 
-    state.playing = False
+
+# =========================================================
+# SKIP
+# =========================================================
+
+async def skip_player(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state or not state.current:
+        return False
+
+    current = state.current
+
+    remove_temp_file(current)
+
+    try:
+
+        if CALLS:
+            await CALLS.leave_call(chat_id)
+
+    except Exception:
+        pass
+
+    if state.queue:
+
+        state.current = state.queue.pop(0)
+        state.playing = False
+        state.paused = False
+
+        await start_current(chat_id)
+
+        return True
+
     state.current = None
+    state.playing = False
+    state.paused = False
+
+    return True
 
 
-async def leave_player(
-    update: Update,
-):
-    chat = update.effective_chat
+# =========================================================
+# SHUFFLE
+# =========================================================
 
-    if not chat:
+async def shuffle_queue(chat_id: int):
+
+    import random
+
+    state = PLAYERS.get(chat_id)
+
+    if not state:
         return
 
-    try:
-        await voice_engine.stop(chat.id)
-    except Exception:
-        pass
+    if len(state.queue) < 2:
+        return
 
-    try:
-        await voice_engine.leave(chat.id)
-    except Exception:
-        pass
-
-    clear_player(chat.id)
+    random.shuffle(state.queue)
 
 
-def cycle_repeat(
-    state: PlayerState,
-):
+# =========================================================
+# REPEAT
+# =========================================================
+
+async def cycle_repeat(chat_id: int):
+
+    state = PLAYERS.get(chat_id)
+
+    if not state:
+        return "off"
+
     modes = [
         "off",
         "one",
@@ -641,831 +1011,1032 @@ def cycle_repeat(
         (current_index + 1) % len(modes)
     ]
 
+    await update_control_message(chat_id)
 
-# ============================================================
-# Control message
-# ============================================================
+    return state.repeat_mode
 
-async def send_or_update_player(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    chat = update.effective_chat
 
-    if not chat:
-        return
+# =========================================================
+# QUEUE TEXT
+# =========================================================
 
-    state = get_player(chat.id)
+def queue_text(state: PlayerState):
 
-    text = player_text(state)
-    keyboard = player_keyboard(state)
+    lines = [
+        "📋 <b>Queue</b>",
+        "",
+    ]
 
-    if state.control_message_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat.id,
-                message_id=state.control_message_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
-            return
-        except Exception:
-            state.control_message_id = None
+    if state.current:
 
-    message = await context.bot.send_message(
-        chat.id,
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
+        lines.append(
+            "▶️ <b>Now:</b> "
+            f"{escape(state.current.title)}"
+        )
+
+        lines.append(
+            f"   👤 {escape(state.current.username)}"
+        )
+
+    else:
+
+        lines.append(
+            "⏹ Nothing is playing."
+        )
+
+    lines.append("")
+
+    if not state.queue:
+
+        lines.append(
+            "Queue is empty."
+        )
+
+        return "\n".join(lines)
+
+    for index, item in enumerate(
+        state.queue,
+        start=1,
+    ):
+
+        lines.append(
+            f"{index}. "
+            f"{escape(item.title)}"
+        )
+
+        lines.append(
+            f"   👤 {escape(item.username)}"
+        )
+
+    return "\n".join(lines)
+
+
+# =========================================================
+# PERMISSION
+# =========================================================
+
+async def can_control_current(
+    update,
+) -> bool:
+
+    state = PLAYERS.get(
+        update.effective_chat.id
     )
 
-    state.control_message_id = message.message_id
+    if not state or not state.current:
+        return False
+
+    if await check_admin(update):
+        return True
+
+    return (
+        update.effective_user.id
+        == state.current.user_id
+    )
 
 
-# ============================================================
-# Commands
-# ============================================================
+# =========================================================
+# TEXT COMMANDS
+# =========================================================
 
-COMMANDS = {
-    "play",
-    "شغل",
-    "تشغيل",
-
-    "video",
-    "فيديو",
-
-    "pause",
-    "وقف",
-
-    "resume",
-    "كمل",
-
-    "skip",
-    "next",
-    "تالي",
-
-    "stop",
-    "وقفه",
-
-    "leave",
-    "انهاء",
-
-    "queue",
-    "قائمة",
-
-    "now",
-    "الآن",
-
-    "repeat",
-    "كرر",
-
-    "shuffle",
-    "خلط",
-
-    "clear",
-    "مسح",
-
-    "mute",
-    "كتم",
-
-    "unmute",
-    "صوت",
-}
-
-
-# ============================================================
-# Button handler
-# ============================================================
-
-async def player_button(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+async def player_text_command(
+    update,
+    context,
 ):
-    query = update.callback_query
 
-    if not query:
+    message = update.effective_message
+
+    if not message or not message.text:
         return
+
+    text = message.text.strip()
+
+    if not text:
+        return
+
+    # Exact command only
+    if text.lower() not in {
+        x.lower()
+        for x in COMMANDS
+    }:
+        return
+
+    command = text.lower()
+
+    chat_id = update.effective_chat.id
+
+    # -----------------------------------------------------
+    # PLAY
+    # -----------------------------------------------------
+
+    if command in (
+        "play",
+        "شغل",
+        "تشغيل",
+    ):
+
+        await add_to_queue(
+            update,
+            force_video=False,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # VIDEO
+    # -----------------------------------------------------
+
+    if command in (
+        "video",
+        "فيديو",
+    ):
+
+        await add_to_queue(
+            update,
+            force_video=True,
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # QUEUE
+    # -----------------------------------------------------
+
+    if command in (
+        "queue",
+        "قائمة",
+    ):
+
+        state = get_player(chat_id)
+
+        await message.reply_text(
+            queue_text(state),
+            parse_mode="HTML",
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # NOW
+    # -----------------------------------------------------
+
+    if command in (
+        "now",
+        "الآن",
+    ):
+
+        state = get_player(chat_id)
+
+        await message.reply_text(
+            player_text(state),
+            parse_mode="HTML",
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # PAUSE
+    # -----------------------------------------------------
+
+    if command in (
+        "pause",
+        "وقف",
+    ):
+
+        if not await can_control_current(
+            update
+        ):
+
+            await message.reply_text(
+                "⛔ You cannot control this track."
+            )
+
+            return
+
+        ok = await pause_player(chat_id)
+
+        if not ok:
+
+            await message.reply_text(
+                "❌ Nothing is playing."
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # RESUME
+    # -----------------------------------------------------
+
+    if command in (
+        "resume",
+        "كمل",
+    ):
+
+        if not await can_control_current(
+            update
+        ):
+
+            await message.reply_text(
+                "⛔ You cannot control this track."
+            )
+
+            return
+
+        ok = await resume_player(chat_id)
+
+        if not ok:
+
+            await message.reply_text(
+                "❌ Nothing is paused."
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # SKIP
+    # -----------------------------------------------------
+
+    if command in (
+        "skip",
+        "next",
+        "تالي",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Skip is admin-only."
+            )
+
+            return
+
+        await skip_player(chat_id)
+
+        await update_control_message(
+            chat_id
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # STOP
+    # -----------------------------------------------------
+
+    if command in (
+        "stop",
+        "وقفه",
+    ):
+
+        if not await can_control_current(
+            update
+        ):
+
+            await message.reply_text(
+                "⛔ You cannot stop this track."
+            )
+
+            return
+
+        await stop_player(chat_id)
+
+        await message.reply_text(
+            "⏹ Playback stopped."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # LEAVE
+    # -----------------------------------------------------
+
+    if command in (
+        "leave",
+        "انهاء",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Leave is admin-only."
+            )
+
+            return
+
+        await stop_player(
+            chat_id,
+            clear_queue=True,
+        )
+
+        await message.reply_text(
+            "🚪 Left the voice chat and cleared the queue."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # REPEAT
+    # -----------------------------------------------------
+
+    if command in (
+        "repeat",
+        "كرر",
+    ):
+
+        state = get_player(chat_id)
+
+        mode = await cycle_repeat(chat_id)
+
+        await message.reply_text(
+            f"🔁 Repeat: <b>{mode}</b>",
+            parse_mode="HTML",
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # SHUFFLE
+    # -----------------------------------------------------
+
+    if command in (
+        "shuffle",
+        "خلط",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Shuffle is admin-only."
+            )
+
+            return
+
+        await shuffle_queue(chat_id)
+
+        await update_control_message(
+            chat_id
+        )
+
+        await message.reply_text(
+            "🔀 Queue shuffled."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # CLEAR
+    # -----------------------------------------------------
+
+    if command in (
+        "clear",
+        "مسح",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Clear is admin-only."
+            )
+
+            return
+
+        state = get_player(chat_id)
+
+        state.queue.clear()
+
+        await update_control_message(
+            chat_id
+        )
+
+        await message.reply_text(
+            "🗑 Queue cleared."
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # MUTE
+    # -----------------------------------------------------
+
+    if command in (
+        "mute",
+        "كتم",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Mute is admin-only."
+            )
+
+            return
+
+        state = get_player(chat_id)
+
+        if not state.current:
+            return
+
+        try:
+
+            await ensure_engine()
+
+            if not state.muted:
+
+                state.previous_volume = (
+                    state.volume
+                )
+
+                await CALLS.change_volume_call(
+                    chat_id,
+                    0,
+                )
+
+                state.muted = True
+
+            await update_control_message(
+                chat_id
+            )
+
+        except Exception as e:
+
+            print(
+                f"[MEDIA PLAY] mute error: {e}"
+            )
+
+        return
+
+    # -----------------------------------------------------
+    # UNMUTE
+    # -----------------------------------------------------
+
+    if command in (
+        "unmute",
+        "صوت",
+    ):
+
+        if not await check_admin(update):
+
+            await message.reply_text(
+                "⛔ Unmute is admin-only."
+            )
+
+            return
+
+        state = get_player(chat_id)
+
+        if not state.current:
+            return
+
+        try:
+
+            await ensure_engine()
+
+            state.volume = max(
+                1,
+                state.previous_volume,
+            )
+
+            await CALLS.change_volume_call(
+                chat_id,
+                state.volume,
+            )
+
+            state.muted = False
+
+            await update_control_message(
+                chat_id
+            )
+
+        except Exception as e:
+
+            print(
+                f"[MEDIA PLAY] unmute error: {e}"
+            )
+
+        return
+
+
+# =========================================================
+# CALLBACKS
+# =========================================================
+
+async def player_callback(
+    update,
+    context,
+):
+
+    query = update.callback_query
 
     await query.answer()
 
-    message = query.message
+    chat_id = query.message.chat.id
 
-    if not message:
+    state = PLAYERS.get(chat_id)
+
+    if not state:
         return
 
-    chat_id = message.chat.id
-    state = get_player(chat_id)
+    action = query.data
 
-    user_id = query.from_user.id
+    # -----------------------------------------------------
+    # QUEUE
+    # -----------------------------------------------------
 
-    callback = query.data
+    if action == "mp_queue":
 
-    # --------------------------------------------------------
-    # Current item owner
-    # --------------------------------------------------------
-
-    item_owner = (
-        state.current.user_id
-        if state.current
-        else None
-    )
-
-    owner = (
-        item_owner == user_id
-        if item_owner
-        else False
-    )
-
-    admin = False
-
-    try:
-        member = await context.bot.get_chat_member(
-            chat_id,
-            user_id,
-        )
-
-        admin = member.status in {
-            "administrator",
-            "creator",
-        }
-
-    except Exception:
-        pass
-
-    # --------------------------------------------------------
-    # Pause / Resume
-    # --------------------------------------------------------
-
-    if callback == "mp_pause":
-
-        if not owner and not admin:
-            await query.answer(
-                "You can control only your own track.",
-                show_alert=True,
-            )
-            return
-
-        await pause_player(update)
-
-    elif callback == "mp_resume":
-
-        if not owner and not admin:
-            await query.answer(
-                "You can control only your own track.",
-                show_alert=True,
-            )
-            return
-
-        await resume_player(update)
-
-    # --------------------------------------------------------
-    # Skip
-    # --------------------------------------------------------
-
-    elif callback == "mp_skip":
-
-        if not admin:
-            await query.answer(
-                "Only group admins can skip tracks.",
-                show_alert=True,
-            )
-            return
-
-        await play_next(
-            update,
-            context,
-        )
-
-    # --------------------------------------------------------
-    # Stop
-    # --------------------------------------------------------
-
-    elif callback == "mp_stop":
-
-        if not owner and not admin:
-            await query.answer(
-                "You can stop only your own track.",
-                show_alert=True,
-            )
-            return
-
-        await stop_player(update)
-
-    # --------------------------------------------------------
-    # Repeat
-    # --------------------------------------------------------
-
-    elif callback == "mp_repeat":
-
-        if not owner and not admin:
-            await query.answer(
-                "You can control only your own track.",
-                show_alert=True,
-            )
-            return
-
-        cycle_repeat(state)
-
-    # --------------------------------------------------------
-    # Shuffle
-    # --------------------------------------------------------
-
-    elif callback == "mp_shuffle":
-
-        if not admin:
-            await query.answer(
-                "Only group admins can shuffle the queue.",
-                show_alert=True,
-            )
-            return
-
-        random.shuffle(state.queue)
-
-    # --------------------------------------------------------
-    # Queue
-    # --------------------------------------------------------
-
-    elif callback == "mp_queue":
-
-        await query.answer()
-
-        await query.message.reply_text(
+        await query.edit_message_text(
             queue_text(state),
-            parse_mode=ParseMode.HTML,
+            parse_mode="HTML",
+            reply_markup=make_keyboard(state),
         )
+
         return
 
-    # --------------------------------------------------------
-    # Now
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # NOW
+    # -----------------------------------------------------
 
-    elif callback == "mp_now":
+    if action == "mp_now":
 
-        await query.answer()
-
-        await query.message.reply_text(
+        await query.edit_message_text(
             player_text(state),
-            parse_mode=ParseMode.HTML,
+            parse_mode="HTML",
+            reply_markup=make_keyboard(state),
         )
+
         return
 
-    # --------------------------------------------------------
-    # Mute
-    # --------------------------------------------------------
+    # -----------------------------------------------------
+    # PERMISSIONS
+    # -----------------------------------------------------
 
-    elif callback == "mp_mute":
+    admin_actions = {
+        "mp_skip",
+        "mp_shuffle",
+        "mp_clear",
+        "mp_leave",
+        "mp_vol_down",
+        "mp_vol_up",
+        "mp_mute",
+        "mp_unmute",
+        "mp_volume",
+    }
 
-        if not admin:
+    if action in admin_actions:
+
+        if not await check_admin(update):
+
             await query.answer(
-                "Only group admins can mute the player.",
+                "⛔ Admin only.",
                 show_alert=True,
             )
+
             return
 
-        if state.muted:
-            await voice_engine.unmute(chat_id)
-            state.muted = False
-        else:
-            await voice_engine.mute(chat_id)
-            state.muted = True
+    else:
 
-    # --------------------------------------------------------
-    # Volume down
-    # --------------------------------------------------------
+        if not await can_control_current(
+            update
+        ):
 
-    elif callback == "mp_vol_down":
-
-        if not admin:
             await query.answer(
-                "Only group admins can change volume.",
+                "⛔ You cannot control this track.",
                 show_alert=True,
             )
+
             return
+
+    # -----------------------------------------------------
+    # PAUSE
+    # -----------------------------------------------------
+
+    if action == "mp_pause":
+
+        await pause_player(chat_id)
+
+    # -----------------------------------------------------
+    # RESUME
+    # -----------------------------------------------------
+
+    elif action == "mp_resume":
+
+        await resume_player(chat_id)
+
+    # -----------------------------------------------------
+    # SKIP
+    # -----------------------------------------------------
+
+    elif action == "mp_skip":
+
+        await skip_player(chat_id)
+
+    # -----------------------------------------------------
+    # REPEAT
+    # -----------------------------------------------------
+
+    elif action == "mp_repeat":
+
+        await cycle_repeat(chat_id)
+
+    # -----------------------------------------------------
+    # SHUFFLE
+    # -----------------------------------------------------
+
+    elif action == "mp_shuffle":
+
+        await shuffle_queue(chat_id)
+
+    # -----------------------------------------------------
+    # VOLUME DOWN
+    # -----------------------------------------------------
+
+    elif action == "mp_vol_down":
 
         state.volume = max(
             0,
             state.volume - 10,
         )
 
-        await voice_engine.set_volume(
-            chat_id,
-            state.volume,
-        )
+        state.muted = False
 
-    # --------------------------------------------------------
-    # Volume up
-    # --------------------------------------------------------
+        try:
 
-    elif callback == "mp_vol_up":
+            await ensure_engine()
 
-        if not admin:
-            await query.answer(
-                "Only group admins can change volume.",
-                show_alert=True,
+            await CALLS.change_volume_call(
+                chat_id,
+                state.volume,
             )
-            return
+
+        except Exception as e:
+
+            print(
+                f"[MEDIA PLAY] volume error: {e}"
+            )
+
+    # -----------------------------------------------------
+    # VOLUME UP
+    # -----------------------------------------------------
+
+    elif action == "mp_vol_up":
 
         state.volume = min(
             200,
             state.volume + 10,
         )
 
-        await voice_engine.set_volume(
-            chat_id,
-            state.volume,
+        state.muted = False
+
+        try:
+
+            await ensure_engine()
+
+            await CALLS.change_volume_call(
+                chat_id,
+                state.volume,
+            )
+
+        except Exception as e:
+
+            print(
+                f"[MEDIA PLAY] volume error: {e}"
+            )
+
+    # -----------------------------------------------------
+    # MUTE
+    # -----------------------------------------------------
+
+    elif action == "mp_mute":
+
+        state.previous_volume = state.volume
+
+        try:
+
+            await ensure_engine()
+
+            await CALLS.change_volume_call(
+                chat_id,
+                0,
+            )
+
+            state.muted = True
+
+        except Exception as e:
+
+            print(
+                f"[MEDIA PLAY] mute error: {e}"
+            )
+
+    # -----------------------------------------------------
+    # UNMUTE
+    # -----------------------------------------------------
+
+    elif action == "mp_unmute":
+
+        state.volume = max(
+            1,
+            state.previous_volume,
         )
 
-    # --------------------------------------------------------
-    # Clear
-    # --------------------------------------------------------
+        try:
 
-    elif callback == "mp_clear":
+            await ensure_engine()
 
-        if not admin:
-            await query.answer(
-                "Only group admins can clear the queue.",
-                show_alert=True,
+            await CALLS.change_volume_call(
+                chat_id,
+                state.volume,
             )
-            return
 
-        state.queue.clear()
+            state.muted = False
 
-    # --------------------------------------------------------
-    # Leave
-    # --------------------------------------------------------
+        except Exception as e:
 
-    elif callback == "mp_leave":
-
-        if not admin:
-            await query.answer(
-                "Only group admins can make the player leave.",
-                show_alert=True,
+            print(
+                f"[MEDIA PLAY] unmute error: {e}"
             )
-            return
 
-        await leave_player(update)
+    # -----------------------------------------------------
+    # VOLUME
+    # -----------------------------------------------------
 
-        await query.message.edit_text(
-            "🚪 Player left the Voice Chat."
-        )
-        return
+    elif action == "mp_volume":
 
-    # --------------------------------------------------------
-    # Update control message
-    # --------------------------------------------------------
-
-    try:
-        await query.message.edit_text(
-            player_text(state),
-            parse_mode=ParseMode.HTML,
-            reply_markup=player_keyboard(state),
+        await query.answer(
+            f"Volume: {state.volume}%",
+            show_alert=True,
         )
 
-        state.control_message_id = (
-            query.message.message_id
-        )
-
-    except Exception:
-        pass
-
-
-# ============================================================
-# Text command handler
-# ============================================================
-
-async def player_text_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    message = update.effective_message
-
-    if not message:
-        return
-
-    text = (
-        message.text
-        or ""
-    ).strip().lower()
-
-    if text not in COMMANDS:
-        return
-
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if not chat or not user:
-        return
-
-    state = get_player(chat.id)
-
-    # --------------------------------------------------------
-    # PLAY
-    #
-    # The actual media extraction/download is intentionally
-    # outside this file.
-    #
-    # Here we expect play to be used as a reply to an audio
-    # or video Telegram message.
-    # --------------------------------------------------------
-
-    if text in {
-        "play",
-        "شغل",
-        "تشغيل",
-        "video",
-        "فيديو",
-    }:
-
-        reply = message.reply_to_message
-
-        if not reply:
-            await message.reply_text(
-                "🎵 Reply to an audio or video and use "
-                "<b>play</b>.",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        file_id = None
-        media_type = None
-        title = "Unknown"
-
-        if reply.audio:
-            file_id = reply.audio.file_id
-            media_type = "audio"
-            title = (
-                reply.audio.title
-                or reply.audio.file_name
-                or "Audio"
-            )
-
-        elif reply.voice:
-            file_id = reply.voice.file_id
-            media_type = "audio"
-            title = "Voice"
-
-        elif reply.video:
-            file_id = reply.video.file_id
-            media_type = "video"
-            title = (
-                reply.video.file_name
-                or "Video"
-            )
-
-        elif reply.document:
-            mime = (
-                reply.document.mime_type
-                or ""
-            )
-
-            if mime.startswith("audio/"):
-                file_id = reply.document.file_id
-                media_type = "audio"
-                title = (
-                    reply.document.file_name
-                    or "Audio"
-                )
-
-            elif mime.startswith("video/"):
-                file_id = reply.document.file_id
-                media_type = "video"
-                title = (
-                    reply.document.file_name
-                    or "Video"
-                )
-
-        if not file_id:
-            await message.reply_text(
-                "⚠️ Reply to an audio or video file."
-            )
-            return
-
-        # "video" forces video playback.
-        if text in {"video", "فيديو"}:
-            media_type = "video"
-
-        item = QueueItem(
-            chat_id=chat.id,
-            message_id=reply.message_id,
-            user_id=user.id,
-            username=(
-                user.username
-                or user.first_name
-                or "User"
-            ),
-            title=title,
-            media_type=media_type,
-            file_id=file_id,
-        )
-
-        await add_to_queue(
-            update,
-            context,
-            item,
-        )
-        return
-
-    # --------------------------------------------------------
-    # PAUSE
-    # --------------------------------------------------------
-
-    if text in {"pause", "وقف"}:
-
-        if not state.current:
-            return
-
-        if not await can_control_item(
-            update,
-            context,
-            state.current,
-        ):
-            await message.reply_text(
-                "⛔ You can control only your own track."
-            )
-            return
-
-        await pause_player(update)
-
-        await send_or_update_player(
-            update,
-            context,
-        )
-        return
-
-    # --------------------------------------------------------
-    # RESUME
-    # --------------------------------------------------------
-
-    if text in {"resume", "كمل"}:
-
-        if not state.current:
-            return
-
-        if not await can_control_item(
-            update,
-            context,
-            state.current,
-        ):
-            await message.reply_text(
-                "⛔ You can control only your own track."
-            )
-            return
-
-        await resume_player(update)
-
-        await send_or_update_player(
-            update,
-            context,
-        )
-        return
-
-    # --------------------------------------------------------
-    # SKIP
-    # --------------------------------------------------------
-
-    if text in {
-        "skip",
-        "next",
-        "تالي",
-    }:
-
-        if not await is_admin(
-            update,
-            context,
-            user.id,
-        ):
-            await message.reply_text(
-                "🛡️ Only group admins can skip tracks."
-            )
-            return
-
-        await play_next(
-            update,
-            context,
-        )
-        return
-
-    # --------------------------------------------------------
+    # -----------------------------------------------------
     # STOP
-    # --------------------------------------------------------
+    # -----------------------------------------------------
 
-    if text in {
-        "stop",
-        "وقفه",
-    }:
+    elif action == "mp_stop":
 
-        if not state.current:
-            return
+        await stop_player(chat_id)
 
-        if not await can_control_item(
-            update,
-            context,
-            state.current,
-        ):
-            await message.reply_text(
-                "⛔ You can stop only your own track."
+        try:
+            await query.edit_message_text(
+                "⏹ <b>Playback stopped.</b>",
+                parse_mode="HTML",
             )
-            return
+        except Exception:
+            pass
 
-        await stop_player(update)
-
-        await message.reply_text(
-            "⏹ Stopped."
-        )
         return
 
-    # --------------------------------------------------------
-    # LEAVE
-    # --------------------------------------------------------
-
-    if text in {
-        "leave",
-        "انهاء",
-    }:
-
-        if not await is_admin(
-            update,
-            context,
-            user.id,
-        ):
-            await message.reply_text(
-                "🛡️ Only group admins can use Leave."
-            )
-            return
-
-        await leave_player(update)
-
-        await message.reply_text(
-            "🚪 Left the Voice Chat."
-        )
-        return
-
-    # --------------------------------------------------------
-    # QUEUE
-    # --------------------------------------------------------
-
-    if text in {
-        "queue",
-        "قائمة",
-    }:
-
-        await message.reply_text(
-            queue_text(state),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    # --------------------------------------------------------
-    # NOW
-    # --------------------------------------------------------
-
-    if text in {
-        "now",
-        "الآن",
-    }:
-
-        await message.reply_text(
-            player_text(state),
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    # --------------------------------------------------------
-    # REPEAT
-    # --------------------------------------------------------
-
-    if text in {
-        "repeat",
-        "كرر",
-    }:
-
-        if not state.current:
-            return
-
-        if not await can_control_item(
-            update,
-            context,
-            state.current,
-        ):
-            await message.reply_text(
-                "⛔ You can control only your own track."
-            )
-            return
-
-        cycle_repeat(state)
-
-        await send_or_update_player(
-            update,
-            context,
-        )
-        return
-
-    # --------------------------------------------------------
-    # SHUFFLE
-    # --------------------------------------------------------
-
-    if text in {
-        "shuffle",
-        "خلط",
-    }:
-
-        if not await is_admin(
-            update,
-            context,
-            user.id,
-        ):
-            await message.reply_text(
-                "🛡️ Only group admins can shuffle."
-            )
-            return
-
-        random.shuffle(state.queue)
-
-        await send_or_update_player(
-            update,
-            context,
-        )
-        return
-
-    # --------------------------------------------------------
+    # -----------------------------------------------------
     # CLEAR
-    # --------------------------------------------------------
+    # -----------------------------------------------------
 
-    if text in {
-        "clear",
-        "مسح",
-    }:
-
-        if not await is_admin(
-            update,
-            context,
-            user.id,
-        ):
-            await message.reply_text(
-                "🛡️ Only group admins can clear the queue."
-            )
-            return
+    elif action == "mp_clear":
 
         state.queue.clear()
 
-        await send_or_update_player(
-            update,
-            context,
+    # -----------------------------------------------------
+    # LEAVE
+    # -----------------------------------------------------
+
+    elif action == "mp_leave":
+
+        await stop_player(
+            chat_id,
+            clear_queue=True,
         )
+
+        try:
+            await query.edit_message_text(
+                "🚪 <b>Left the voice chat.</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
         return
 
+    await update_control_message(chat_id)
 
-# ============================================================
-# Registration
-# ============================================================
 
-def register_media_play(
-    application,
-):
-    """
-    Add all Media Player handlers.
+# =========================================================
+# COMMAND HANDLERS
+# =========================================================
 
-    bot.py will eventually only need:
+async def cmd_play(update, context):
+    await add_to_queue(
+        update,
+        force_video=False,
+    )
 
-        from media_play import register_media_play
 
-        register_media_play(application)
-    """
+async def cmd_video(update, context):
+    await add_to_queue(
+        update,
+        force_video=True,
+    )
 
+
+async def cmd_pause(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_resume(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_skip(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_stop(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_leave(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_queue(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_now(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_repeat(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_shuffle(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_clear(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_mute(update, context):
+    await player_text_command(update, context)
+
+
+async def cmd_unmute(update, context):
+    await player_text_command(update, context)
+
+
+# =========================================================
+# REGISTER
+# =========================================================
+
+def register_media_play(application):
+
+    global APPLICATION
+
+    APPLICATION = application
+
+    from telegram.ext import (
+        CallbackQueryHandler,
+        CommandHandler,
+        MessageHandler,
+        filters,
+    )
+
+    # English slash commands
     application.add_handler(
         CommandHandler(
-            [
-                "play",
-                "video",
-                "pause",
-                "resume",
-                "skip",
-                "next",
-                "stop",
-                "leave",
-                "queue",
-                "now",
-                "repeat",
-                "shuffle",
-                "clear",
-                "mute",
-                "unmute",
-            ],
-            player_text_command,
+            "play",
+            cmd_play,
         )
     )
 
     application.add_handler(
+        CommandHandler(
+            "video",
+            cmd_video,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "pause",
+            cmd_pause,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "resume",
+            cmd_resume,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "skip",
+            cmd_skip,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "next",
+            cmd_skip,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "stop",
+            cmd_stop,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "leave",
+            cmd_leave,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "queue",
+            cmd_queue,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "now",
+            cmd_now,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "repeat",
+            cmd_repeat,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "shuffle",
+            cmd_shuffle,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "clear",
+            cmd_clear,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "mute",
+            cmd_mute,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "unmute",
+            cmd_unmute,
+        )
+    )
+
+    # Arabic aliases / plain-text commands.
+    #
+    # IMPORTANT:
+    # Do NOT use a handler for every text message.
+    # It would interfere with the bot's other text handlers.
+    pattern = (
+        r"^\s*(?:"
+        + "|".join(
+            re.escape(x)
+            for x in COMMANDS
+        )
+        + r")\s*$"
+    )
+
+    application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT
+            & ~filters.COMMAND
+            & filters.Regex(
+                pattern,
+                flags=re.IGNORECASE,
+            ),
             player_text_command,
         )
     )
 
     application.add_handler(
         CallbackQueryHandler(
-            player_button,
+            player_callback,
             pattern=r"^mp_",
         )
-  )
+    )
+
+    print(
+        "[MEDIA PLAY] registered successfully."
+    )
