@@ -2009,34 +2009,33 @@ def register_media_play(application):
     # IMPORTANT:
     # Do NOT use a handler for every text message.
     # It would interfere with the bot's other text handlers.
-    pattern = (
-        r"^\s*(?:"
-        + "|".join(
-            re.escape(x)
-            for x in COMMANDS
-        )
-        + r")\s*$"
+pattern = (
+    r"^\s*(?:"
+    + "|".join(
+        re.escape(x)
+        for x in COMMANDS
     )
+    + r")\s*$"
+)
 
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND
-            & filters.Regex(
-                pattern,
-                flags=re.IGNORECASE,
-            ),
-            player_text_command,
-        )
+application.add_handler(
+    MessageHandler(
+        filters.TEXT
+        & ~filters.COMMAND
+        & filters.Regex(
+            re.compile(pattern, re.IGNORECASE),
+        ),
+        player_text_command,
     )
+)
 
-    application.add_handler(
-        CallbackQueryHandler(
-            player_callback,
-            pattern=r"^mp_",
-        )
+application.add_handler(
+    CallbackQueryHandler(
+        player_callback,
+        pattern=r"^mp_",
     )
+)
 
-    print(
-        "[MEDIA PLAY] registered successfully."
-    )
+print(
+    "[MEDIA PLAY] registered successfully."
+)
