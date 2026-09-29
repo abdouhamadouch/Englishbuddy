@@ -13,10 +13,13 @@
 # - Common Mistakes appears only when genuinely relevant
 # - Uses Telegram HTML formatting
 # - AI function is injected from bot.py
-# - Retries AI several times if the response fails
-# - Clean, organized Unicode frames
-# - Bold section titles
-# - Numbered sections and numbered examples
+# - Retries AI several times
+# - Organized title frames
+# - Bold titles
+# - Numbered sections and examples
+# - Quick Tip when useful
+# - Protects long answers from Telegram's message-length limit
+# - Avoids incomplete / cut-off answers as much as possible
 # - No decorative Markdown stars
 
 import re
@@ -39,6 +42,10 @@ _ai_function = None
 
 MAX_INPUT_LENGTH = 3000
 MAX_AI_ATTEMPTS = 4
+
+# Telegram messages have a practical maximum of 4096 characters.
+# We keep a safety margin so formatting does not cause failures.
+TELEGRAM_SAFE_LIMIT = 3900
 
 
 # ============================================================
@@ -93,10 +100,7 @@ def _clean_input(text: str) -> str:
 
 def _clean_ai_output(text: str) -> str:
     """
-    Clean AI output while keeping Telegram HTML formatting.
-
-    We remove Markdown formatting and unsupported HTML,
-    but preserve useful Telegram HTML tags.
+    Clean AI output while keeping useful Telegram HTML.
     """
 
     if not text:
@@ -105,25 +109,35 @@ def _clean_ai_output(text: str) -> str:
     text = str(text).strip()
 
     # Remove code fences.
-    text = re.sub(r"```(?:html|HTML)?", "", text)
+    text = re.sub(
+        r"```(?:html|HTML)?",
+        "",
+        text,
+    )
+
     text = text.replace("```", "")
 
     # Remove Markdown headings.
-    text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(
+        r"^\s*#{1,6}\s*",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
 
-    # Convert Markdown bullets to Telegram bullets.
+    # Convert Markdown bullets.
     text = re.sub(
         r"(?m)^\s*[-*+]\s+",
         "• ",
         text,
     )
 
-    # Remove Markdown bold/italic markers.
+    # Remove Markdown bold / italic markers.
     text = text.replace("**", "")
     text = text.replace("__", "")
     text = text.replace("*", "")
 
-    # Normalize strong to b.
+    # Normalize strong -> b.
     text = re.sub(
         r"<\s*strong\s*>",
         "<b>",
@@ -138,7 +152,7 @@ def _clean_ai_output(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
-    # Keep only safe Telegram HTML tags.
+    # Only allow useful Telegram HTML tags.
     allowed_tags = {
         "b",
         "i",
@@ -195,10 +209,101 @@ def _remove_all_html(text: str) -> str:
 
 
 # ============================================================
+# CHECK WHETHER AI RESPONSE LOOKS INCOMPLETE
+# ============================================================
+
+def _looks_incomplete(text: str) -> bool:
+    """
+    Detect obvious cases where the AI stopped in the middle
+    of an answer.
+
+    This is intentionally conservative so that a normal short
+    answer is not rejected unnecessarily.
+    """
+
+    if not text:
+        return True
+
+    plain = _remove_all_html(text).strip()
+
+    if not plain:
+        return True
+
+    # Unclosed HTML tags.
+    for tag in ("b", "i", "em", "u", "s", "code", "pre"):
+        opening = len(
+            re.findall(
+                rf"<{tag}(?:\s[^>]*)?>",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        closing = len(
+            re.findall(
+                rf"</{tag}>",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        if opening != closing:
+            return True
+
+    # Obvious unfinished punctuation.
+    if plain.endswith(
+        (
+            ":",
+            ",",
+            "—",
+            "–",
+            "...",
+            "…",
+            "(",
+            "[",
+            "{",
+        )
+    ):
+        return True
+
+    # Obvious unfinished English sentence.
+    last_line = plain.splitlines()[-1].strip()
+
+    if last_line:
+        # These endings often indicate that the model stopped
+        # before completing the sentence.
+        unfinished_endings = (
+            "and",
+            "or",
+            "but",
+            "because",
+            "when",
+            "if",
+            "that",
+            "which",
+            "who",
+            "such as",
+            "for example",
+            "used to",
+            "in order to",
+            "rather than",
+        )
+
+        lower_last = last_line.lower()
+
+        for ending in unfinished_endings:
+            if lower_last.endswith(" " + ending):
+                return True
+
+    return False
+
+
+# ============================================================
 # AI REQUEST WITH RETRIES
 # ============================================================
 
 async def _ask_ai_with_retry(prompt: str):
+
     if _ai_function is None:
         print("[GRAMMAR] AI function is not configured.")
         return None
@@ -206,30 +311,77 @@ async def _ask_ai_with_retry(prompt: str):
     for attempt in range(1, MAX_AI_ATTEMPTS + 1):
 
         try:
-            result = await _ai_function(prompt)
+
+            current_prompt = prompt
+
+            # On later attempts, explicitly tell the model
+            # to return a complete answer and not stop midway.
+            if attempt > 1:
+                current_prompt = f"""
+{prompt}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL COMPLETENESS REQUIREMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is retry attempt {attempt}.
+
+The previous answer may have been incomplete.
+
+Generate the ENTIRE grammar lesson again from the beginning.
+
+Do NOT continue from the previous answer.
+Do NOT refer to a previous answer.
+Do NOT stop in the middle of a section.
+Do NOT leave an example unfinished.
+Do NOT leave an HTML tag unfinished.
+
+Keep the answer concise enough to fit in one Telegram message,
+while still covering the genuinely important information.
+
+The final character of the answer must be the natural end
+of the final sentence.
+"""
+
+            result = await _ai_function(current_prompt)
 
             if result:
+
                 result = str(result).strip()
 
                 if result:
+
                     cleaned = _clean_ai_output(result)
+
+                    if cleaned and not _looks_incomplete(cleaned):
+
+                        print(
+                            f"[GRAMMAR] Complete AI response "
+                            f"received on attempt {attempt}."
+                        )
+
+                        return cleaned
 
                     if cleaned:
                         print(
-                            f"[GRAMMAR] AI response received "
-                            f"on attempt {attempt}."
+                            f"[GRAMMAR] Response appears incomplete "
+                            f"on attempt {attempt}/"
+                            f"{MAX_AI_ATTEMPTS}."
                         )
-                        return cleaned
 
-            print(
-                f"[GRAMMAR] Empty AI response "
-                f"on attempt {attempt}/{MAX_AI_ATTEMPTS}."
-            )
+            else:
+                print(
+                    f"[GRAMMAR] Empty AI response "
+                    f"on attempt {attempt}/"
+                    f"{MAX_AI_ATTEMPTS}."
+                )
 
         except Exception as e:
+
             print(
                 f"[GRAMMAR] AI error "
-                f"on attempt {attempt}/{MAX_AI_ATTEMPTS}: {e}"
+                f"on attempt {attempt}/"
+                f"{MAX_AI_ATTEMPTS}: {e}"
             )
 
     print("[GRAMMAR] All AI attempts failed.")
@@ -292,123 +444,109 @@ IMPORTANT TEACHING RULES
 • Do not overload the answer with unnecessary theory.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DESIGN AND FORMATTING
+VERY IMPORTANT: COMPLETE ANSWER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The final answer must look like a beautifully organized mini grammar lesson.
+The answer MUST be complete.
 
-Use Telegram HTML.
+Never stop in the middle of:
 
-IMPORTANT:
-• Use <b>...</b> for ALL major section titles.
-• Use <b>...</b> for important grammar names, structures, corrections and key points.
-• Section titles must be visually strong and clearly bold.
-• NEVER use Markdown **bold**.
-• NEVER use Markdown *italic*.
-• NEVER use decorative stars such as * or **.
-• Do not use Markdown headings.
-• Use Unicode symbols and Unicode frames instead.
-• Do not use tables unless a very small comparison genuinely requires one.
+• a sentence
+• an example
+• a translation
+• a numbered point
+• a grammar rule
+• a comparison
+• a Common Mistake
+• an HTML tag
+• a section
 
-The design MUST use organized double Unicode frames.
+Before finishing, mentally check that every opened idea
+has been completed.
 
-Use this general frame style:
+Do NOT produce a long unnecessary explanation.
 
-╔══════════════════════════════════════╗
-║  🧠  <b>① GRAMMAR POINT</b>          ║
-╚══════════════════════════════════════╝
+Prefer a concise COMPLETE explanation over a long answer
+that may get cut off.
 
-For sections with more content, use:
+Only include information that is genuinely useful for this
+specific input.
 
-╔══════════════════════════════════════╗
-║  📘  <b>② WHAT IS IT?</b>            ║
-╠══════════════════════════════════════╣
-║                                      ║
-║  content                             ║
-║                                      ║
-╚══════════════════════════════════════╝
-
-Use:
+The final section must end naturally with a complete sentence.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-between major sections.
-
-The frames should be neat, balanced and consistent.
-
-Do NOT make random ugly boxes.
-
-Do NOT use a different random structure for every sentence.
-
-Keep the design readable on a phone.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SECTION NUMBERING
+TITLE DESIGN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Number the MAIN sections sequentially.
+Do NOT put the title inside a huge rectangular box.
 
-Use:
+The title itself must be surrounded by a beautiful compact frame.
 
-①
-②
-③
-④
-⑤
-⑥
-⑦
+Use this style:
 
-For example:
+╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
-╔══════════════════════════════════════╗
-║  🧠  <b>① GRAMMAR POINT</b>          ║
-╚══════════════════════════════════════╝
+The important title text must be inside:
 
-Then:
+⟦ <b>...</b> ⟧
 
-╔══════════════════════════════════════╗
-║  📘  <b>② WHAT IS IT?</b>            ║
-╚══════════════════════════════════════╝
+The title itself MUST be bold.
 
-Then:
+Examples:
 
-╔══════════════════════════════════════╗
-║  🧩  <b>③ STRUCTURE</b>              ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
-Then:
+╔═══════ ✦ ⟦ <b>② WHAT IS IT?</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
-╔══════════════════════════════════════╗
-║  ⏰  <b>④ WHEN DO WE USE IT?</b>      ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>③ STRUCTURE</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
-Then:
+╔═══════ ✦ ⟦ <b>④ WHEN DO WE USE IT?</b> ⟧ ✦ ═══════╗
+╚══════════════════════════════════════════════════════╝
 
-╔══════════════════════════════════════╗
-║  💬  <b>⑤ EXAMPLES</b>                ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>⑤ EXAMPLES</b> ⟧ ✦ ═══════╗
+╚════════════════════════════════════════════╝
 
-Then, only if useful:
+╔═══════ ✦ ⟦ <b>⑥ COMPARE</b> ⟧ ✦ ═══════╗
+╚══════════════════════════════════════════╝
 
-╔══════════════════════════════════════╗
-║  ⚖️  <b>⑥ COMPARE</b>                 ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>⑦ COMMON MISTAKES</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
-Then, only if genuinely relevant:
+╔═══════ ✦ ⟦ <b>⑧ IN THIS SENTENCE</b> ⟧ ✦ ═══════╗
+╚════════════════════════════════════════════════╝
 
-╔══════════════════════════════════════╗
-║  ⚠️  <b>⑦ COMMON MISTAKES</b>          ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>⑨ QUICK TIP</b> ⟧ ✦ ═══════╗
+╚══════════════════════════════════════════╝
 
-Do NOT create sections that are not useful.
+The exact width can be adjusted slightly according to the
+title length.
+
+The title must always look surrounded, bold and visually
+separate from the explanation.
+
+Do NOT use a giant box around all the content.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MAIN SECTION NUMBERING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Number main sections sequentially:
+
+① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨
+
+Use only the sections that are actually useful.
+
+Do NOT create empty sections.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NUMBERING INSIDE SECTIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Every important list must be numbered.
-
-Use:
+Use these beautiful numbers:
 
 ❶
 ❷
@@ -417,29 +555,21 @@ Use:
 ❺
 ❻
 
-Do NOT use plain unnumbered paragraphs when the information is naturally a list.
+Every natural list should be numbered.
 
-For example:
-
-❶ <b>Subject + have/has + past participle</b>
-
-❷ <b>He/She/It + has</b>
-
-❸ <b>I/You/We/They + have</b>
-
-For examples, ALWAYS use:
-
-❶
-❷
-❸
-
-Do NOT write:
+Do not write:
 
 Example 1:
 Example 2:
 Example 3:
 
-Do NOT leave examples unnumbered.
+Instead write:
+
+❶ <b>...</b>
+
+❷ <b>...</b>
+
+❸ <b>...</b>
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GRAMMAR POINT
@@ -449,24 +579,25 @@ Start with the main grammar point.
 
 Example:
 
-╔══════════════════════════════════════╗
-║  🧠  <b>① GRAMMAR POINT</b>          ║
-╚══════════════════════════════════════╝
+╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
+╚═══════════════════════════════════════════════╝
 
 <b>Present Perfect</b>
 
-Give a short clear identification of the target grammar.
+Give a short, clear identification of the grammar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHAT IS IT?
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Explain the rule in simple Arabic.
+Explain the rule simply in Arabic.
 
-If useful, number the main ideas:
+Number important ideas:
 
 ❶ ...
+
 ❷ ...
+
 ❸ ...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -475,17 +606,15 @@ STRUCTURE
 
 Show the grammatical structure clearly.
 
-Use simple notation such as:
+For example:
 
-<b>Subject + have/has + past participle</b>
+❶ <b>Subject + have/has + past participle</b>
 
-If there are several important structures, number them:
+❷ <b>Subject + have/has not + past participle</b>
 
-❶ <b>Subject + have/has + V3</b>
+❸ <b>Have/Has + subject + past participle?</b>
 
-❷ <b>Subject + have/has not + V3</b>
-
-❸ <b>Have/Has + subject + V3?</b>
+Keep structures short and clear.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHEN DO WE USE IT?
@@ -493,7 +622,7 @@ WHEN DO WE USE IT?
 
 Explain the important uses.
 
-Number each genuinely important use:
+Number them:
 
 ❶ <b>Experience</b>
 شرح عربي واضح.
@@ -504,27 +633,15 @@ Number each genuinely important use:
 ❸ <b>A recent action with a present result</b>
 شرح عربي واضح.
 
-Do not invent uses that are unrelated to the target grammar.
+Only include uses relevant to the target.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-This section is extremely important.
+Every example MUST be numbered.
 
-Every example MUST be numbered using:
-
-❶
-❷
-❸
-❹
-❺
-
-Each English example must be bold.
-
-Immediately below it, give its Arabic translation.
-
-Example:
+Use:
 
 ❶ <b>She has lived here for five years.</b>
 هي تعيش هنا منذ خمس سنوات.
@@ -535,141 +652,208 @@ Example:
 ❸ <b>They have never visited London.</b>
 لم يزوروا لندن من قبل.
 
-Give at least 3 useful new examples when a grammar rule is being taught.
-
-Use more examples when genuinely useful.
-
-Do not number the Arabic translation separately.
+Important:
+• English examples must be bold.
+• Arabic translations go immediately underneath.
+• Never leave an example without its translation.
+• Give at least 3 useful examples when teaching a rule.
+• Make examples practical for an A2-B1 learner.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMPARE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this section ONLY when there is an important similar structure that learners commonly confuse with the target rule.
+Use ONLY when learners genuinely confuse the target
+with another grammar structure.
 
 Number the comparison:
 
 ❶ <b>Present Perfect</b>
-Example and explanation.
+Example + explanation.
 
 ❷ <b>Past Simple</b>
-Example and explanation.
+Example + explanation.
 
 ❸ <b>The difference</b>
 Explain the difference clearly in Arabic.
-
-Do not compare unrelated grammar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMMON MISTAKES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this section ONLY when there are genuine common mistakes related to the target grammar.
+Use ONLY for genuine grammar mistakes.
 
-Every mistake must be clearly numbered.
-
-Use:
+Format:
 
 ❶ ❌ <b>I have saw him.</b>
 
 ❷ ✅ <b>I have seen him.</b>
 
 ❸ <b>Why?</b>
-بعد have/has نستخدم التصريف الثالث للفعل.
+بعد have/has نستخدم التصريف الثالث.
 
-If there are multiple mistakes, number them:
-
-❶
-❷
-❸
+If there are several mistakes, number each one.
 
 Do not invent mistakes.
 
-Do not include stylistic preferences as grammar mistakes.
+Do not treat stylistic preferences as grammar mistakes.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 IN THIS SENTENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-When the user gives a sentence, explain exactly how the grammar works inside that sentence.
+When the user gives a sentence, explain exactly how the
+target grammar works inside that sentence.
 
-Use numbered points:
+Number important observations:
 
 ❶ <b>has lived</b> is the Present Perfect form.
 
 ❷ <b>for five years</b> shows the duration.
 
-❸ The sentence describes a situation that started in the past and continues until now.
+❸ The situation started in the past and continues until now.
 
 Do not discuss unrelated grammar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FINAL STYLE RULES
+QUICK TIP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• The response should feel like a polished mini grammar lesson.
+Add this section ONLY when it gives the learner a genuinely
+useful memory tip.
 
-• Use clear Arabic explanations.
+Use:
 
-• Keep English grammar terms where useful.
+╔═══════ ✦ ⟦ <b>⑨ QUICK TIP</b> ⟧ ✦ ═══════╗
+╚══════════════════════════════════════════╝
 
-• Major section titles MUST be bold using Telegram HTML <b>...</b>.
+💡 <b>Remember:</b>
+شرح قصير جدًا يساعد المتعلم على تذكر القاعدة.
 
-• Important English examples MUST be bold.
+Do not add a meaningless tip.
 
-• Important grammar structures MUST be bold.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FINAL FORMATTING RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• Important corrections MUST be bold.
+• Use Telegram HTML.
 
-• Use the main section numbering ① ② ③ ④ ⑤ ⑥ ⑦.
+• Major titles MUST use <b>...</b>.
 
-• Use internal numbering ❶ ❷ ❸ ❹ ❺.
+• The title itself must be surrounded by ⟦ ... ⟧.
 
-• Keep the sections visually separated.
+• Use beautiful compact Unicode title frames.
 
-• Use double Unicode frames.
+• Do NOT put the entire answer inside one giant box.
 
-• Use "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" between major sections.
+• Use main numbering ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨.
 
-• Do not use Markdown stars.
+• Use internal numbering ❶ ❷ ❸ ❹ ❺ ❻.
 
-• Do not use decorative asterisks.
+• Every example must be numbered.
+
+• Important English examples must be bold.
+
+• Important grammar structures must be bold.
+
+• Important corrections must be bold.
+
+• Use:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+between major sections.
+
+• Never use Markdown **bold**.
+
+• Never use Markdown *italic*.
+
+• Never use decorative stars.
 
 • Do not use Markdown headings.
 
-• Do not produce empty sections.
+• Do not use unnecessary tables.
 
-• Do not produce unnecessary sections.
+• Do not create empty sections.
 
-• Do not use a table unless a very small comparison genuinely requires one.
+• Do not repeat the same explanation.
 
-• Do not put the whole explanation in one paragraph.
+• Keep the answer concise enough to remain complete.
 
-• Keep it easy to read on a phone.
+• NEVER stop halfway through an answer.
 
-• Never mention these formatting instructions to the user.
+• NEVER leave an unfinished sentence.
 
-• Never say that you are following a template.
+• NEVER leave an unfinished example.
 
-The final answer should be clean, professional, visually attractive and highly organized.
+• NEVER leave an unfinished HTML tag.
+
+• The final answer must end naturally.
+
+The result should look like a polished, organized mini grammar
+lesson that is easy to read on a phone.
 """
 
 
 # ============================================================
-# ANALYZE GRAMMAR
+# SPLIT LONG TELEGRAM MESSAGES SAFELY
 # ============================================================
 
-async def analyze_grammar(text: str):
-    text = _clean_input(text)
+def _split_long_message(text: str, limit: int = TELEGRAM_SAFE_LIMIT):
+    """
+    Split long messages at paragraph/line boundaries whenever
+    possible.
 
-    if not text:
-        return None
+    The AI is instructed to stay concise, but this protects
+    against Telegram's message-length limit if an unusually
+    long response is returned.
+    """
 
-    prompt = build_grammar_prompt(text)
+    if len(text) <= limit:
+        return [text]
 
-    result = await _ask_ai_with_retry(prompt)
+    chunks = []
 
-    return result
+    remaining = text.strip()
+
+    while len(remaining) > limit:
+
+        # Prefer paragraph boundary.
+        cut = remaining.rfind("\n\n", 0, limit)
+
+        # Otherwise prefer normal line boundary.
+        if cut < int(limit * 0.55):
+            cut = remaining.rfind("\n", 0, limit)
+
+        # Otherwise prefer a sentence boundary.
+        if cut < int(limit * 0.55):
+            sentence_positions = [
+                remaining.rfind(". ", 0, limit),
+                remaining.rfind("؟ ", 0, limit),
+                remaining.rfind("! ", 0, limit),
+                remaining.rfind("? ", 0, limit),
+            ]
+
+            cut = max(sentence_positions)
+
+        # Last fallback: split at a space.
+        if cut < int(limit * 0.55):
+            cut = remaining.rfind(" ", 0, limit)
+
+        # Absolute fallback.
+        if cut <= 0:
+            cut = limit
+
+        chunk = remaining[:cut].strip()
+
+        if chunk:
+            chunks.append(chunk)
+
+        remaining = remaining[cut:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
 
 
 # ============================================================
@@ -694,28 +878,40 @@ async def _reply_result(message, result: str):
         )
         return
 
-    try:
-        await message.reply_text(
-            result,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
+    chunks = _split_long_message(result)
 
-    except Exception as e:
-        print(f"[GRAMMAR] HTML send error: {e}")
-
-        plain = _remove_all_html(result)
+    for index, chunk in enumerate(chunks):
 
         try:
+
             await message.reply_text(
-                plain,
+                chunk,
+                parse_mode="HTML",
                 disable_web_page_preview=True,
             )
 
-        except Exception as second_error:
+        except Exception as e:
+
             print(
-                f"[GRAMMAR] Plain send error: {second_error}"
+                f"[GRAMMAR] HTML send error "
+                f"for part {index + 1}: {e}"
             )
+
+            plain = _remove_all_html(chunk)
+
+            try:
+
+                await message.reply_text(
+                    plain,
+                    disable_web_page_preview=True,
+                )
+
+            except Exception as second_error:
+
+                print(
+                    f"[GRAMMAR] Plain send error "
+                    f"for part {index + 1}: {second_error}"
+                )
 
 
 # ============================================================
@@ -725,10 +921,14 @@ async def _reply_result(message, result: str):
 async def _send_typing(message):
 
     try:
+
         await message.chat.send_action("typing")
 
     except Exception as e:
-        print(f"[GRAMMAR] Typing action error: {e}")
+
+        print(
+            f"[GRAMMAR] Typing action error: {e}"
+        )
 
 
 # ============================================================
@@ -792,12 +992,16 @@ async def grammar_reply_command(update, context):
 
     full_text = message.text.strip()
 
-    parts = full_text.split(maxsplit=1)
+    parts = full_text.split(
+        maxsplit=1
+    )
 
     if len(parts) > 1:
+
         text = parts[1].strip()
 
     else:
+
         text = _get_reply_text(update) or ""
 
     text = _clean_input(text)
@@ -832,8 +1036,6 @@ async def grammar_reply_command(update, context):
 
 def register_grammar_handlers(application: Application):
 
-    # /grammar
-    # /gram
     application.add_handler(
         CommandHandler(
             ["grammar", "gram"],
@@ -841,8 +1043,6 @@ def register_grammar_handlers(application: Application):
         )
     )
 
-    # قواعد
-    # جرامر
     application.add_handler(
         MessageHandler(
             filters.TEXT
@@ -854,4 +1054,6 @@ def register_grammar_handlers(application: Application):
         )
     )
 
-    print("[GRAMMAR] handlers registered successfully.")
+    print(
+        "[GRAMMAR] handlers registered successfully."
+    )
