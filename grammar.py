@@ -1,25 +1,5 @@
 # grammar.py
 # FixMyEnglish - Grammar Analyzer
-#
-# Features:
-# - /grammar
-# - /gram
-# - قواعد
-# - جرامر
-# - Works with words, phrases, sentences, or grammar-rule names
-# - Can analyze replied messages
-# - Teaches the actual grammar rule
-# - Explains structure, usage, examples, comparisons and common mistakes
-# - Common Mistakes appears only when genuinely relevant
-# - Uses Telegram HTML formatting
-# - AI function is injected from bot.py
-# - Retries AI several times
-# - Simple rough rectangular title frames
-# - Bold titles
-# - Numbered sections and examples
-# - Quick Tip when useful
-# - Complete-answer protection
-# - No decorative Markdown stars
 
 import re
 
@@ -34,13 +14,14 @@ from telegram.ext import (
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 _ai_function = None
 
 MAX_INPUT_LENGTH = 3000
 MAX_AI_ATTEMPTS = 4
+GRAMMAR_MAX_TOKENS = 1800
 
 
 # ============================================================
@@ -51,9 +32,14 @@ def set_ai_function(ai_function):
     global _ai_function
     _ai_function = ai_function
 
+    print(
+        "[GRAMMAR] AI function connected:",
+        getattr(ai_function, "__name__", str(ai_function))
+    )
+
 
 # ============================================================
-# REPLY TEXT
+# GET REPLIED MESSAGE
 # ============================================================
 
 def _get_reply_text(update: Update):
@@ -74,7 +60,7 @@ def _get_reply_text(update: Update):
 
 
 # ============================================================
-# INPUT CLEANING
+# CLEAN INPUT
 # ============================================================
 
 def _clean_input(text: str) -> str:
@@ -90,16 +76,31 @@ def _clean_input(text: str) -> str:
 
 
 # ============================================================
-# AI OUTPUT CLEANING
+# CLEAN AI OUTPUT
 # ============================================================
 
 def _clean_ai_output(text: str) -> str:
+
     if not text:
         return ""
 
     text = str(text).strip()
 
-    # Remove code fences.
+    # Known empty-response messages from bot.py
+    empty_markers = {
+        "❌ Empty AI response.",
+        "❌ empty ai response.",
+        "empty ai response.",
+        "empty ai response",
+    }
+
+    if text.lower() in {
+        item.lower()
+        for item in empty_markers
+    }:
+        return ""
+
+    # Remove code fences
     text = re.sub(
         r"```(?:html|HTML)?",
         "",
@@ -108,7 +109,7 @@ def _clean_ai_output(text: str) -> str:
 
     text = text.replace("```", "")
 
-    # Remove Markdown headings.
+    # Remove Markdown headings
     text = re.sub(
         r"^\s*#{1,6}\s*",
         "",
@@ -116,19 +117,19 @@ def _clean_ai_output(text: str) -> str:
         flags=re.MULTILINE,
     )
 
-    # Convert Markdown bullets to Telegram bullets.
+    # Markdown bullets -> Telegram bullets
     text = re.sub(
         r"(?m)^\s*[-*+]\s+",
         "• ",
         text,
     )
 
-    # Remove Markdown bold / italic.
+    # Remove Markdown decoration
     text = text.replace("**", "")
     text = text.replace("__", "")
     text = text.replace("*", "")
 
-    # Normalize <strong> to <b>.
+    # Normalize strong -> b
     text = re.sub(
         r"<\s*strong\s*>",
         "<b>",
@@ -143,7 +144,7 @@ def _clean_ai_output(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
-    # Telegram-safe HTML tags.
+    # Allowed Telegram HTML
     allowed_tags = {
         "b",
         "i",
@@ -155,6 +156,7 @@ def _clean_ai_output(text: str) -> str:
     }
 
     def clean_tag(match):
+
         tag = match.group(0)
 
         name_match = re.match(
@@ -178,7 +180,7 @@ def _clean_ai_output(text: str) -> str:
         text,
     )
 
-    # Normalize excessive blank lines.
+    # Remove excessive blank lines
     text = re.sub(
         r"\n[ \t]*\n[ \t]*\n+",
         "\n\n",
@@ -189,6 +191,7 @@ def _clean_ai_output(text: str) -> str:
 
 
 def _remove_all_html(text: str) -> str:
+
     if not text:
         return ""
 
@@ -200,7 +203,70 @@ def _remove_all_html(text: str) -> str:
 
 
 # ============================================================
-# AI REQUEST WITH RETRIES
+# AI REQUEST
+# ============================================================
+
+async def _call_ai(prompt: str):
+
+    if _ai_function is None:
+        print("[GRAMMAR] ERROR: AI function is not configured.")
+        return None
+
+    try:
+        # The normal FixMyEnglish ask_groq interface is:
+        #
+        # ask_groq(prompt, max_tokens=1200, system_prompt=None)
+        #
+        # We deliberately use keyword arguments here so this remains
+        # compatible with the current bot.py implementation.
+
+        result = await _ai_function(
+            prompt,
+            max_tokens=GRAMMAR_MAX_TOKENS,
+            system_prompt=(
+                "You are FixMyEnglish Grammar Teacher. "
+                "Teach English grammar clearly and accurately. "
+                "Use simple English suitable for A2-B1 learners. "
+                "Use Arabic only for important translations "
+                "and short necessary clarifications."
+            ),
+        )
+
+        return result
+
+    except TypeError as e:
+
+        # Compatibility fallback in case the injected function
+        # only accepts one argument.
+
+        print(
+            f"[GRAMMAR] AI function does not accept "
+            f"extended arguments: {e}"
+        )
+
+        try:
+            result = await _ai_function(prompt)
+            return result
+
+        except Exception as second_error:
+
+            print(
+                f"[GRAMMAR] AI fallback error: {second_error}"
+            )
+
+            return None
+
+    except Exception as e:
+
+        print(
+            f"[GRAMMAR] AI call error: {e}"
+        )
+
+        return None
+
+
+# ============================================================
+# AI WITH RETRIES
 # ============================================================
 
 async def _ask_ai_with_retry(prompt: str):
@@ -216,51 +282,72 @@ async def _ask_ai_with_retry(prompt: str):
             current_prompt = prompt
 
             if attempt > 1:
+
                 current_prompt = f"""
 {prompt}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-IMPORTANT RETRY INSTRUCTION
-
+IMPORTANT:
 This is retry attempt {attempt}.
 
-Generate the complete grammar lesson again
-from the beginning.
+Generate the complete answer again from the beginning.
 
-Make sure every sentence, example, translation,
-numbered point and section is complete.
+The previous attempt did not return a usable answer.
 
-If the answer is becoming too long, shorten the
-explanation or remove unnecessary sections.
-
-Do not leave any example or translation incomplete.
+Make the response complete and concise enough to finish
+within the available response length.
 
 Do not mention this retry instruction.
 """
 
-            result = await _ai_function(current_prompt)
+            result = await _call_ai(current_prompt)
 
-            if result:
+            if result is None:
 
-                result = str(result).strip()
+                print(
+                    f"[GRAMMAR] AI returned None "
+                    f"on attempt {attempt}/{MAX_AI_ATTEMPTS}."
+                )
 
-                if result:
+                continue
 
-                    cleaned = _clean_ai_output(result)
+            result = str(result).strip()
 
-                    if cleaned:
-                        print(
-                            f"[GRAMMAR] AI response received "
-                            f"on attempt {attempt}."
-                        )
+            # Detect bot.py's empty-response message.
+            if (
+                not result
+                or result.lower()
+                in {
+                    "❌ empty ai response.",
+                    "❌ empty ai response",
+                    "empty ai response.",
+                    "empty ai response",
+                }
+            ):
 
-                        return cleaned
+                print(
+                    f"[GRAMMAR] Empty AI response "
+                    f"on attempt {attempt}/{MAX_AI_ATTEMPTS}."
+                )
+
+                continue
+
+            cleaned = _clean_ai_output(result)
+
+            if not cleaned:
+
+                print(
+                    f"[GRAMMAR] AI result became empty after cleaning "
+                    f"on attempt {attempt}/{MAX_AI_ATTEMPTS}."
+                )
+
+                continue
 
             print(
-                f"[GRAMMAR] Empty AI response "
-                f"on attempt {attempt}/{MAX_AI_ATTEMPTS}."
+                f"[GRAMMAR] AI response received "
+                f"on attempt {attempt}."
             )
+
+            return cleaned
 
         except Exception as e:
 
@@ -283,327 +370,151 @@ def build_grammar_prompt(text: str) -> str:
     return f"""
 You are the Grammar Teacher inside FixMyEnglish.
 
-The user wants to LEARN grammar.
+Analyze this user input:
 
-Analyze this input:
+"{text}"
 
-USER INPUT:
-{text}
-
-Your task is to teach the relevant grammar clearly,
-accurately, and practically.
+Teach the relevant grammar clearly and accurately.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LANGUAGE STYLE
+LANGUAGE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• The main explanation should be in SIMPLE, CLEAR ENGLISH.
+The main explanation must be in simple English suitable
+for an A2-B1 learner.
 
-• Use English suitable for an A2-B1 learner.
+Do NOT write the whole lesson in Arabic.
 
-• Do NOT write the whole explanation in Arabic.
+Use Arabic only for:
 
-• Use Arabic only where it is genuinely useful.
+• important grammar-rule translations
+• Arabic translations of English examples
+• short clarifications when they are genuinely useful
 
-• Arabic should mainly be used for:
-  - translating important grammar rules
-  - translating English examples
-  - explaining a difficult point briefly
-  - clarifying an important difference
-
-• Do not translate every English sentence into Arabic unless
-  it is an example or the translation is genuinely useful.
-
-• Keep important grammar terms in English.
-
-• The user is learning English, so English should remain
-  the main language of the lesson.
+English must remain the main language.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMPORTANT TEACHING RULES
+TEACH THE GRAMMAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• Do not give a useless one-line answer.
+Do not merely name the grammar rule.
 
-• Do not automatically treat every input as an error.
+Explain:
 
-• If the sentence is correct, explain the grammar rule
-  that makes it correct.
+• what the grammar is
+• how the structure works
+• when it is used
+• why it is used
+• useful examples
+• important differences when relevant
+• genuine common mistakes when relevant
 
-• If the sentence is incorrect, explain the real grammatical
-  problem and why it is wrong.
+If the input is already correct, do not invent an error.
+Explain the grammar that makes it correct.
 
-• If the user gives a grammar rule or grammar name such as:
+If the input is incorrect, explain the real grammatical
+problem and give the corrected form.
 
-  Present Perfect
-  Past Perfect
-  First Conditional
-  Second Conditional
-  Third Conditional
-  Passive Voice
-  Reported Speech
-  Used to
-  Wish
-  Relative Clauses
-
-  teach that grammar rule directly.
-
-• If the user gives:
-
-  "2 conditional"
-  "second conditional"
-  "conditional 2"
-
-  understand that the user means the Second Conditional
-  and teach it directly.
-
-• Do not ask the user to clarify an obvious grammar-rule name.
-
-• If the user gives a word, explain the important grammatical
-  patterns and constructions associated with that word.
-
-• If the user gives a phrase, explain the grammar contained
-  in the phrase.
-
-• Do not invent grammar problems.
-
-• Do not discuss grammar unrelated to the user's input.
-
-• Focus on useful English grammar for an A2-B1 learner,
-  but explain more advanced grammar when the input requires it.
-
-• Explain WHY the structure is used, not only WHAT it is.
-
-• Use practical examples.
-
-• Examples are important.
-
-• Give several useful examples when the grammar topic benefits
-  from them.
-
-• Do not reduce useful examples unnecessarily just to save space.
+If the input is the name of a grammar rule, teach that rule
+directly.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMPLETE ANSWER REQUIREMENT
+TITLE FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The answer must be complete.
-
-Never stop in the middle of:
-
-• a sentence
-• an example
-• a translation
-• a numbered point
-• a grammar rule
-• a comparison
-• a common mistake
-• an HTML tag
-• a section
-
-Every English example must have a complete Arabic translation.
-
-If the answer becomes too long:
-
-• shorten the explanation
-• remove repetition
-• remove an unnecessary section
-
-Do not remove useful examples unnecessarily.
-
-Never start an example that you cannot finish completely.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TITLE DESIGN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Every main section title must use ONLY a simple rectangular
-frame around the title.
-
-Use this exact visual style:
+Each main section title must use this simple rectangular frame:
 
 ┌──────────────────────────────┐
 │   <b>① GRAMMAR POINT</b>     │
 └──────────────────────────────┘
 
-The frame must be:
+Use a simple, slightly rough rectangular border.
 
-• simple
-• slightly rough
-• clean
-• readable on a phone
-
-The frame must NOT contain decorative symbols.
+Do NOT use complicated decorative borders.
 
 Do NOT use:
 
 ✦
-⟦ ⟧
 ★
 ☆
-╔
-╗
-╚
-╝
-████
-or other decorative borders.
+⟦ ⟧
+╔ ╗ ╚ ╝
+or decorative stars.
 
-Do not put the entire answer inside a frame.
-
-ONLY the title gets the frame.
-
-The title itself must be bold.
+Only the title gets the frame.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-MAIN SECTION NUMBERING
+SECTION ORDER
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use:
-
-① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨
+Use only the sections that are useful.
 
 Possible sections:
 
-① Grammar Point
-② What Is It?
-③ Structure
-④ When Do We Use It?
-⑤ Examples
-⑥ Compare
-⑦ Common Mistakes
-⑧ In This Sentence
-⑨ Quick Tip
+① GRAMMAR POINT
+② WHAT IS IT?
+③ STRUCTURE
+④ WHEN DO WE USE IT?
+⑤ EXAMPLES
+⑥ COMPARE
+⑦ COMMON MISTAKES
+⑧ IN THIS SENTENCE
+⑨ QUICK TIP
 
-Use ONLY the sections that are actually useful.
+Use the numbered symbols ① ② ③ etc.
+
+For points and examples use:
+
+❶ ❷ ❸ ❹ ❺ ❻
 
 Do not create empty sections.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NUMBERING INSIDE SECTIONS
+EXPLANATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use:
-
-❶
-❷
-❸
-❹
-❺
-❻
-
-Use these for:
-
-• uses
-• rules
-• examples
-• mistakes
-• comparisons
-• important observations
-
-Do not use unnecessary numbering for normal paragraphs.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-① GRAMMAR POINT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Start with the name of the grammar point.
-
-Example:
-
-┌──────────────────────────────┐
-│   <b>① GRAMMAR POINT</b>     │
-└──────────────────────────────┘
-
-<b>Second Conditional</b>
-
-Then give a short English explanation.
-
-Example:
-
-The Second Conditional is used to talk about
-unreal, imaginary, or unlikely situations.
-
-Arabic translation may be added briefly when useful:
-
-يُستخدم للحديث عن مواقف غير حقيقية أو افتراضية.
-
-Do not translate every sentence.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-② WHAT IS IT?
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Explain the grammar simply in English.
-
-Use Arabic only when a short clarification or translation
-helps the learner.
+Explain the grammar in clear, simple English.
 
 For example:
 
-❶ We use it for an imaginary or unlikely situation.
+The Second Conditional is used for imaginary,
+unreal, or unlikely situations.
 
-❷ The situation is not real or is unlikely to happen.
+Arabic may be added briefly:
 
-❸ The result is also hypothetical.
+يُستخدم للحديث عن مواقف افتراضية أو غير حقيقية.
 
-Do not write the whole section in Arabic.
+Do not translate the whole explanation.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-③ STRUCTURE
+STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Show the structure clearly.
+Show important structures clearly.
 
 Example:
 
 ❶ <b>If + past simple, would + base verb</b>
 
-Example:
-<b>If I had more time, I would study more.</b>
+Then explain the structure simply.
 
-Use Arabic translation only for the example:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+Examples are very important.
+
+Give at least 3 useful examples for a grammar rule.
+
+Give more when there are several important uses and
+the extra examples are genuinely useful.
+
+Every example must be complete.
+
+Use:
+
+❶ <b>If I had more time, I would study more.</b>
 لو كان لدي وقت أكثر، لدرست أكثر.
-
-If positive, negative, or question forms are genuinely useful,
-explain them.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-④ WHEN DO WE USE IT?
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Explain the important uses in clear English.
-
-Example:
-
-❶ <b>Imaginary situations</b>
-We imagine a situation that is not true now.
-
-❷ <b>Unlikely situations</b>
-We talk about something that is possible but not very likely.
-
-❸ <b>Hypothetical results</b>
-We describe what would happen in that situation.
-
-Use Arabic briefly only when it improves understanding.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⑤ EXAMPLES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Examples are an important part of the lesson.
-
-Give at least 3 useful examples when teaching a grammar rule.
-
-Give more examples when there are several important uses
-and the answer remains clear and complete.
-
-Every example must be numbered.
-
-Use this style:
-
-❶ <b>If I had more money, I would travel more.</b>
-لو كان لدي مال أكثر، لسافرت أكثر.
 
 ❷ <b>If she studied harder, she would pass the exam.</b>
 لو درست بجدية أكبر، لنجحت في الامتحان.
@@ -611,200 +522,108 @@ Use this style:
 ❸ <b>If we lived near the school, we would walk there.</b>
 لو كنا نعيش بالقرب من المدرسة، لذهبنا إلى هناك مشيًا.
 
-Important:
+Rules:
 
-• English examples must be bold.
-
+• English example must be bold.
+• Arabic translation must immediately follow it.
 • Every English example must have an Arabic translation.
-
-• The Arabic translation should come immediately after
-  the English example.
-
-• Do NOT translate the explanation of every example.
-
-• Translate the example itself.
-
-• Do not start an example unless you can finish both
-  the English sentence and its Arabic translation.
+• Do not translate every explanation sentence.
+• Do not start an example that cannot be completed.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⑥ COMPARE
+COMPARISONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use ONLY when learners commonly confuse the target grammar
-with another structure.
+Use a comparison only when learners commonly confuse
+the target grammar with another structure.
 
-Example:
+Keep it concise.
 
-❶ <b>First Conditional</b>
-Real or possible future situations.
-
-<b>If I study, I will pass.</b>
-إذا درست، سأنجح.
-
-❷ <b>Second Conditional</b>
-Imaginary or unlikely situations.
-
-<b>If I studied more, I would pass.</b>
-لو درست أكثر، لنجحت.
-
-❸ <b>Main difference</b>
-First Conditional = real/possible.
-Second Conditional = unreal/imaginary or unlikely.
-
-Keep the comparison concise.
+Explain the real difference clearly.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⑦ COMMON MISTAKES
+COMMON MISTAKES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this section ONLY when there are genuine common mistakes.
+Use this section ONLY if there are genuine common mistakes.
 
-Example:
+Show:
 
-❶ ❌ <b>If I will have money, I would travel.</b>
+❶ Incorrect form
+❷ Correct form
+❸ Why it is wrong
 
-❷ ✅ <b>If I had money, I would travel.</b>
+Use Arabic only for a short useful clarification.
 
-❸ <b>Why?</b>
-In the Second Conditional, we normally use
-past simple after <b>if</b>, not <b>will</b>.
-
-Arabic clarification may be added briefly:
-
-في Second Conditional نستخدم past simple بعد if.
-
-Do not write the whole section in Arabic.
-
-Do not invent mistakes.
+Do not invent common mistakes.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⑧ IN THIS SENTENCE
+IN THIS SENTENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-If the user provides a sentence, explain how the grammar
-works specifically in that sentence.
+If the user gives a sentence, explain how the grammar
+works specifically inside that sentence.
 
-Example:
-
-❶ <b>had</b> is the past simple form.
-
-❷ <b>would travel</b> shows the hypothetical result.
-
-❸ The sentence describes an unreal or hypothetical situation.
-
-Use Arabic translation only if useful.
+Focus on the actual sentence.
 
 Do not discuss unrelated grammar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⑨ QUICK TIP
+QUICK TIP
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Use this section ONLY when there is a genuinely useful
-memory tip.
+Use this only when there is a genuinely useful memory tip.
 
-Use the same simple title frame:
-
-┌──────────────────────────────┐
-│     <b>⑨ QUICK TIP</b>       │
-└──────────────────────────────┘
-
-💡 <b>Remember:</b>
-Second Conditional =
-<b>If + past simple → would + base verb</b>
-
-Arabic can be added briefly if useful.
+Keep it short.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FINAL FORMATTING RULES
+FORMATTING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• Use Telegram HTML.
+Use Telegram HTML.
 
-• Main section titles must be bold.
+Use <b> for important words, structures, corrections,
+examples and titles.
 
-• Put ONLY the title inside a simple rectangular frame.
+Do not use Markdown bold.
 
-• The frame must be simple and slightly rough.
+Do not use Markdown headings.
 
-• Do not decorate the frame.
+Do not use decorative Markdown stars.
 
-• Do not use ✦.
-
-• Do not use ⟦ ⟧.
-
-• Do not use stars.
-
-• Do not use complicated borders.
-
-• Use ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ for main sections.
-
-• Use ❶ ❷ ❸ ❹ ❺ ❻ for items and examples.
-
-• Use emojis only when they improve organization or meaning.
-
-• Do not fill the answer with emojis.
-
-• English is the MAIN language of the lesson.
-
-• Arabic is mainly for translations and short necessary
-  clarifications.
-
-• Do not translate the entire explanation into Arabic.
-
-• Every English example must have an Arabic translation.
-
-• Important English examples must be bold.
-
-• Important grammar structures must be bold.
-
-• Important corrections must be bold.
-
-• Use this separator between major sections:
+Use this separator:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• Never use Markdown **bold**.
+Use numbered organization, not decorative clutter.
 
-• Never use Markdown *italic*.
+Do not fill the lesson with emojis.
 
-• Never use decorative Markdown stars.
+Do not use unnecessary tables.
 
-• Do not use Markdown headings.
+Keep the lesson easy to read on a phone.
 
-• Do not use unnecessary tables.
+Do not repeat information.
 
-• Do not create empty sections.
+The answer must be complete.
 
-• Do not repeat the same explanation.
+Never leave:
 
-• Keep the answer organized and easy to read on a phone.
+• an unfinished sentence
+• an unfinished example
+• an unfinished Arabic translation
+• an unfinished section
+• an unfinished HTML tag
 
-• Give useful examples generously.
+If the lesson becomes too long, shorten explanations and
+remove repetition before removing useful examples.
 
-• Every example must be complete.
-
-• Every English example must have a complete Arabic translation.
-
-• Never leave an unfinished sentence.
-
-• Never leave an unfinished example.
-
-• Never leave an unfinished Arabic translation.
-
-• Never leave an unfinished HTML tag.
-
-• End naturally with a complete sentence.
-
-The final result should feel like a polished English grammar lesson:
-English explanation first, Arabic translations where useful,
-clear numbering, useful examples, and simple rough title frames.
+End naturally with a complete sentence.
 """
 
 
 # ============================================================
-# ANALYZE GRAMMAR
+# ANALYZE
 # ============================================================
 
 async def analyze_grammar(text: str):
@@ -816,9 +635,7 @@ async def analyze_grammar(text: str):
 
     prompt = build_grammar_prompt(text)
 
-    result = await _ask_ai_with_retry(prompt)
-
-    return result
+    return await _ask_ai_with_retry(prompt)
 
 
 # ============================================================
@@ -830,17 +647,23 @@ async def _reply_result(message, result: str):
     result = (result or "").strip()
 
     if not result:
+
         await message.reply_text(
-            "I couldn't generate the grammar explanation."
+            "I couldn't generate the grammar explanation. "
+            "Please try again."
         )
+
         return
 
     result = _clean_ai_output(result)
 
     if not result:
+
         await message.reply_text(
-            "I couldn't generate the grammar explanation."
+            "I couldn't generate the grammar explanation. "
+            "Please try again."
         )
+
         return
 
     try:
@@ -874,7 +697,7 @@ async def _reply_result(message, result: str):
 
 
 # ============================================================
-# TYPING ACTION
+# TYPING
 # ============================================================
 
 async def _send_typing(message):
@@ -891,7 +714,7 @@ async def _send_typing(message):
 
 
 # ============================================================
-# /grammar AND /gram
+# /grammar /gram
 # ============================================================
 
 async def grammar_command(update, context):
@@ -904,9 +727,13 @@ async def grammar_command(update, context):
     text = ""
 
     if context.args:
-        text = " ".join(context.args).strip()
+
+        text = " ".join(
+            context.args
+        ).strip()
 
     if not text:
+
         text = _get_reply_text(update) or ""
 
     text = _clean_input(text)
@@ -934,11 +761,13 @@ async def grammar_command(update, context):
 
         return
 
-    await _reply_result(message, result)
+    await _reply_result(
+        message,
+        result,
+    )
 
 
 # ============================================================
-# ARABIC COMMANDS
 # قواعد / جرامر
 # ============================================================
 
@@ -986,7 +815,10 @@ async def grammar_reply_command(update, context):
 
         return
 
-    await _reply_result(message, result)
+    await _reply_result(
+        message,
+        result,
+    )
 
 
 # ============================================================
@@ -1015,4 +847,4 @@ def register_grammar_handlers(application: Application):
 
     print(
         "[GRAMMAR] handlers registered successfully."
-        )
+)
