@@ -14,7 +14,7 @@
 # - Uses Telegram HTML formatting
 # - AI function is injected from bot.py
 # - Retries AI several times
-# - Organized title frames
+# - Thick rectangular title frames
 # - Bold titles
 # - Numbered sections and examples
 # - Quick Tip when useful
@@ -215,33 +215,23 @@ async def _ask_ai_with_retry(prompt: str):
 
             current_prompt = prompt
 
-            # Only add a stronger completeness instruction
-            # on retries. Do not reject the response afterward.
             if attempt > 1:
                 current_prompt = f"""
 {prompt}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IMPORTANT RETRY INSTRUCTION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPORTANT RETRY INSTRUCTION:
 
 This is retry attempt {attempt}.
 
-Generate the COMPLETE grammar explanation again
+Generate the complete grammar explanation again
 from the beginning.
 
-Do not stop halfway.
+Make sure every sentence, example, translation,
+numbered point and section is finished.
 
-Complete every sentence, example, translation,
-numbered point and section before ending.
-
-Use fewer examples or shorter explanations if necessary.
-
-Do NOT start another example if you do not have
-enough space to finish both the English sentence
-and its Arabic translation.
-
-Keep the answer concise enough for Telegram.
+If the answer becomes long, shorten explanations
+or remove unnecessary sections, but do not leave
+an example or translation incomplete.
 
 Do not mention this retry instruction.
 """
@@ -325,7 +315,7 @@ IMPORTANT TEACHING RULES
 
   teach that grammar rule directly.
 
-• If the user gives a numbered grammar name such as:
+• If the user gives:
   "2 conditional"
   "second conditional"
   "conditional 2"
@@ -353,7 +343,10 @@ IMPORTANT TEACHING RULES
 
 • Make the explanation easy to understand.
 
-• Give practical examples.
+• Give MANY useful examples when the topic benefits from them.
+
+• Examples are important. Do not reduce the number of examples
+  unnecessarily just to make the explanation shorter.
 
 • Explain WHY the structure is used, not only WHAT it is.
 
@@ -363,7 +356,7 @@ IMPORTANT TEACHING RULES
 COMPLETE ANSWER REQUIREMENT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The answer MUST be complete.
+The answer must be complete.
 
 Do not stop in the middle of:
 
@@ -377,92 +370,44 @@ Do not stop in the middle of:
 • an HTML tag
 • a section
 
-Before finishing, make sure the final sentence is complete.
+Every English example must have its complete Arabic translation.
 
-IMPORTANT:
+If the answer becomes too long:
 
-Prefer a SHORT COMPLETE answer over a long incomplete answer.
+• shorten explanations
+• remove repetition
+• remove unnecessary sections
 
-If the explanation is becoming long:
+But keep the useful examples whenever possible.
 
-• shorten the explanation
-• remove unnecessary details
-• use fewer examples
-• skip an unnecessary section
-
-NEVER sacrifice completeness just to add more information.
+Never leave the final example incomplete.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TELEGRAM LENGTH CONTROL
+TITLE STYLE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The entire answer must be concise enough for ONE Telegram message.
+Do not use decorative symbols, stars, or complicated frames.
 
-Aim for approximately 500–850 words maximum.
+For every main section title, use a simple thick rectangular frame:
 
-For simple grammar topics, use much less.
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃        ① GRAMMAR POINT           ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-Do NOT try to fill the available space.
+The section title itself must be bold.
 
-Do NOT add unnecessary examples.
+Use the same simple rectangular style for other main sections.
 
-Completeness is more important than quantity.
+Example:
 
-If you have already explained the rule clearly,
-do not continue adding extra material.
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃        ② WHAT IS IT?             ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TITLE DESIGN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Do not add ✦, ⟦, ═══════, or other decorative symbols
+inside or around the frame.
 
-The title must be surrounded by a compact decorative frame.
-
-Do NOT put the entire answer inside one huge box.
-
-Use this style:
-
-╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
-╚═══════════════════════════════════════════════╝
-
-The title itself must be bold.
-
-The title must be visually surrounded by:
-
-⟦ <b>...</b> ⟧
-
-Use the same general design for the other sections.
-
-Examples:
-
-╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
-╚═══════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>② WHAT IS IT?</b> ⟧ ✦ ═══════╗
-╚══════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>③ STRUCTURE</b> ⟧ ✦ ═══════╗
-╚════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>④ WHEN DO WE USE IT?</b> ⟧ ✦ ═══════╗
-╚══════════════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>⑤ EXAMPLES</b> ⟧ ✦ ═══════╗
-╚════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>⑥ COMPARE</b> ⟧ ✦ ═══════╗
-╚══════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>⑦ COMMON MISTAKES</b> ⟧ ✦ ═══════╗
-╚═══════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>⑧ IN THIS SENTENCE</b> ⟧ ✦ ═══════╗
-╚════════════════════════════════════════════════╝
-
-╔═══════ ✦ ⟦ <b>⑨ QUICK TIP</b> ⟧ ✦ ═══════╗
-╚══════════════════════════════════════════╝
-
-Adjust the decorative line length if necessary so that
-the title looks balanced.
+Keep the frame simple, thick and readable on a phone.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MAIN SECTION NUMBERING
@@ -475,6 +420,18 @@ Use:
 Use only sections that are actually useful.
 
 Do not create empty sections.
+
+Possible sections:
+
+① Grammar Point
+② What Is It?
+③ Structure
+④ When Do We Use It?
+⑤ Examples
+⑥ Compare
+⑦ Common Mistakes
+⑧ In This Sentence
+⑨ Quick Tip
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NUMBERING INSIDE SECTIONS
@@ -489,7 +446,7 @@ Use:
 ❺
 ❻
 
-Every natural list should be numbered.
+Use these for examples, mistakes, uses and important points.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GRAMMAR POINT
@@ -499,8 +456,9 @@ Start with the main grammar rule.
 
 Example:
 
-╔═══════ ✦ ⟦ <b>① GRAMMAR POINT</b> ⟧ ✦ ═══════╗
-╚═══════════════════════════════════════════════╝
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃       <b>① GRAMMAR POINT</b>      ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 <b>Second Conditional</b>
 
@@ -512,7 +470,7 @@ WHAT IS IT?
 
 Explain the rule simply in Arabic.
 
-Number the important ideas:
+Number important ideas:
 
 ❶ ...
 
@@ -530,10 +488,8 @@ Example:
 
 ❶ <b>If + past simple, would + base verb</b>
 
-❷ <b>If I had more time, I would study English.</b>
-
-If there are positive, negative or question forms
-that are genuinely useful, explain them.
+If positive, negative or question forms are useful,
+explain them.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WHEN DO WE USE IT?
@@ -558,12 +514,14 @@ Only include uses relevant to the target grammar.
 EXAMPLES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Give 2 COMPLETE useful examples by default.
+Examples are an important part of the lesson.
 
-A third example is allowed ONLY if the answer is still
-short enough and there is enough space to finish it completely.
+Give at least 3 useful examples when teaching a grammar rule.
 
-Every example MUST be numbered.
+Give more examples when the grammar has several important uses
+and there is enough space.
+
+Every example MUST be complete.
 
 Use:
 
@@ -573,18 +531,21 @@ Use:
 ❷ <b>If she studied harder, she would pass the exam.</b>
 لو درست بجدية أكبر، لنجحت في الامتحان.
 
+❸ <b>If we lived near the school, we would walk there.</b>
+لو كنا نعيش بالقرب من المدرسة، لذهبنا إلى هناك مشيًا.
+
 Important:
 
 • English examples must be bold.
 
 • Arabic translation must immediately follow each example.
 
-• NEVER give an English example without its translation.
+• Never give an English example without its translation.
 
-• NEVER start a third example if it may cause the answer
-  to become incomplete.
+• Do not start an example unless you can finish both
+  the English sentence and its Arabic translation.
 
-• A complete example is more important than having three examples.
+• Prefer several complete examples over unnecessary theory.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 COMPARE
@@ -648,8 +609,9 @@ Use this section ONLY when a useful memory tip exists.
 
 Example:
 
-╔═══════ ✦ ⟦ <b>⑨ QUICK TIP</b> ⟧ ✦ ═══════╗
-╚══════════════════════════════════════════╝
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃          <b>⑨ QUICK TIP</b>       ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 💡 <b>Remember:</b>
 Second Conditional = imaginary/unreal situation:
@@ -663,13 +625,12 @@ FINAL FORMATTING RULES
 
 • Use Telegram HTML.
 
-• Major section titles MUST be bold.
+• Main section titles must be bold.
 
-• The title itself must be surrounded by ⟦ ... ⟧.
+• Main section titles must be surrounded by the simple
+  thick rectangular frame shown above.
 
-• Use compact decorative title frames.
-
-• Do not put the entire answer inside one huge box.
+• Do not use ✦, ⟦, decorative stars, or complicated frames.
 
 • Use ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ for main sections.
 
@@ -692,7 +653,7 @@ between major sections.
 
 • Never use Markdown *italic*.
 
-• Never use decorative stars.
+• Never use decorative Markdown stars.
 
 • Do not use Markdown headings.
 
@@ -702,43 +663,29 @@ between major sections.
 
 • Do not repeat the same explanation.
 
-• Keep the answer concise but complete.
+• Keep the answer organized and easy to read on a phone.
 
-• NEVER stop halfway through an answer.
+• Give useful examples generously.
 
-• NEVER leave an unfinished sentence.
+• Every example must be complete.
 
-• NEVER leave an unfinished example.
+• Every English example must have a complete Arabic translation.
 
-• NEVER leave an unfinished Arabic translation.
+• Never stop halfway through an answer.
 
-• NEVER leave an unfinished HTML tag.
+• Never leave an unfinished sentence.
 
-• NEVER end immediately after starting a new section.
+• Never leave an unfinished example.
+
+• Never leave an unfinished Arabic translation.
+
+• Never leave an unfinished HTML tag.
 
 • End naturally with a complete sentence.
 
-FINAL CHECK BEFORE SENDING:
-
-❶ Is the grammar rule correct?
-
-❷ Is the explanation complete?
-
-❸ Is every example complete?
-
-❹ Does every English example have a complete Arabic translation?
-
-❺ Did I avoid unnecessary sections?
-
-❻ Is the final sentence complete?
-
-❼ Is the answer short enough for one Telegram message?
-
-If the answer is becoming too long, shorten it BEFORE
-starting another example or section.
-
-The result should look like a polished, organized mini grammar
-lesson that is easy to read on a phone.
+The result should look like a clear, organized mini grammar lesson,
+with strong simple title frames, useful numbering, and plenty of
+complete examples.
 """
 
 
