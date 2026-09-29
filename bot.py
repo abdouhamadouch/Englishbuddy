@@ -81,7 +81,6 @@ talk_mode_users = set()
 OWNER_USERNAME = None
 
 
-
 # =========================================================
 # JSON STORAGE
 # =========================================================
@@ -1341,15 +1340,20 @@ async def make_audio(text, voice, slow=False):
                 pass
         return None
 
-
+# =========================================================
+# UPDATED SEND PRONUNCIATION FUNCTION
+# =========================================================
 async def send_pronunciation(update, word, dialect, slow=False):
     message = update.effective_message
     if not message:
         return
+
     word = (word or "").strip()
     if not word:
         return
+
     word_count = len(word.split())
+
     if word_count > 500:
         await message.reply_text(
             "❌ The text is too long for pronunciation.\n"
@@ -1357,60 +1361,142 @@ async def send_pronunciation(update, word, dialect, slow=False):
         )
         return
 
-    encoded_word = quote(word)
-    
-    # Text info & YouGlish link
+    encoded_word = quote(word, safe="")
+
+    # =====================================================
+    # Text info + YouGlish + PlayPhrase links
+    # =====================================================
     if word_count <= 3:
+
         if dialect == "US":
             info = await pronunciation_info(word, "US")
-            yg_url = f"https://youglish.com/pronounce/{encoded_word}/english/us"
+            yg_url = (
+                f"https://youglish.com/pronounce/"
+                f"{encoded_word}/english/us"
+            )
+
         elif dialect == "UK":
             info = await pronunciation_info(word, "UK")
-            yg_url = f"https://youglish.com/pronounce/{encoded_word}/english/uk"
+            yg_url = (
+                f"https://youglish.com/pronounce/"
+                f"{encoded_word}/english/uk"
+            )
+
         else:
             info = await both_pronunciation(word)
-            yg_url = f"https://youglish.com/pronounce/{encoded_word}/english"
-            
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎧 YouGlish", url=yg_url)]])
-        await send_long_reply(update, info, reply_markup=keyboard)
+            yg_url = (
+                f"https://youglish.com/pronounce/"
+                f"{encoded_word}/english"
+            )
 
-    # Audios
+        # PlayPhrase search URL
+        playphrase_url = (
+            f"https://www.playphrase.me/#/search?q={encoded_word}"
+        )
+
+        # YouGlish + PlayPhrase buttons
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "🎧 YouGlish",
+                    url=yg_url
+                ),
+                InlineKeyboardButton(
+                    "▶️ PlayPhrase",
+                    url=playphrase_url
+                ),
+            ]
+        ])
+
+        await send_long_reply(
+            update,
+            info,
+            reply_markup=keyboard
+        )
+
+    # =====================================================
+    # US Audio
+    # =====================================================
     if dialect in ("US", "BOTH"):
-        audio_us = await make_audio(word, US_VOICE, slow=slow)
+        audio_us = await make_audio(
+            word,
+            US_VOICE,
+            slow=slow
+        )
+
         if audio_us:
             try:
                 with open(audio_us, "rb") as f:
-                    caption = "🔊 US Pronunciation" + (" (Slow)" if slow else "")
-                    await message.reply_audio(audio=f, caption=caption)
+                    caption = (
+                        "🔊 US Pronunciation"
+                        + (" (Slow)" if slow else "")
+                    )
+
+                    await message.reply_audio(
+                        audio=f,
+                        caption=caption
+                    )
+
             except Exception as e:
-                print("US Audio send error:", repr(e), flush=True)
+                print(
+                    "US Audio send error:",
+                    repr(e),
+                    flush=True
+                )
+
             finally:
                 if os.path.exists(audio_us):
                     try:
                         os.remove(audio_us)
                     except Exception:
                         pass
-        else:
-            await message.reply_text("❌ I couldn't create the US pronunciation audio.")
 
+        else:
+            await message.reply_text(
+                "❌ I couldn't create the US pronunciation audio."
+            )
+
+    # =====================================================
+    # UK Audio
+    # =====================================================
     if dialect in ("UK", "BOTH"):
-        audio_uk = await make_audio(word, UK_VOICE, slow=slow)
+        audio_uk = await make_audio(
+            word,
+            UK_VOICE,
+            slow=slow
+        )
+
         if audio_uk:
             try:
                 with open(audio_uk, "rb") as f:
-                    caption = "🔊 UK Pronunciation" + (" (Slow)" if slow else "")
-                    await message.reply_audio(audio=f, caption=caption)
+                    caption = (
+                        "🔊 UK Pronunciation"
+                        + (" (Slow)" if slow else "")
+                    )
+
+                    await message.reply_audio(
+                        audio=f,
+                        caption=caption
+                    )
+
             except Exception as e:
-                print("UK Audio send error:", repr(e), flush=True)
+                print(
+                    "UK Audio send error:",
+                    repr(e),
+                    flush=True
+                )
+
             finally:
                 if os.path.exists(audio_uk):
                     try:
                         os.remove(audio_uk)
                     except Exception:
                         pass
-        else:
-            await message.reply_text("❌ I couldn't create the UK pronunciation audio.")
 
+        else:
+            await message.reply_text(
+                "❌ I couldn't create the UK pronunciation audio."
+            )
 
 # =========================================================
 # DUAS
