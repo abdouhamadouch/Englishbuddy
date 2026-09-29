@@ -13,6 +13,8 @@
 # - Telegram HTML formatting
 # - AI retry system
 # - Decorative Unicode frames
+# - Bold section titles
+# - Beautiful numbered points
 # - No Markdown stars
 # - AI function injected from bot.py
 
@@ -191,7 +193,7 @@ def _clean_ai_output(text: str) -> str:
     )
 
     # -----------------------------------------------------
-    # Normalize strong/em
+    # Normalize strong tags
     # -----------------------------------------------------
 
     text = re.sub(
@@ -305,7 +307,7 @@ async def _ask_ai_with_retry(prompt: str):
 # PROMPT
 # =========================================================
 
-def build_grammar_prompt(text: str) -> str:
+def build_grammar_prompt(text: str):
 
     return f"""
 You are the Grammar Teacher inside FixMyEnglish.
@@ -330,7 +332,7 @@ CORE INSTRUCTIONS
 • If the input is a grammar rule/name, teach that rule directly.
 • If the input is a word, explain important grammatical patterns
   and constructions related to that word.
-• If the input is a phrase, explain the grammar contained in it.
+• If the input is a phrase, explain the grammar contained in the phrase.
 • Focus mainly on A2-B1 learners.
 • Explain advanced grammar only when necessary.
 • Avoid unnecessary grammar theory.
@@ -348,13 +350,16 @@ LANGUAGE
 
 VISUAL DESIGN
 
-The answer must look clean and distinctive on Telegram.
+The answer must look clean, strong, organized and distinctive
+on Telegram.
 
 Use Telegram HTML.
 
 Use:
 
 <b>important text</b>
+
+All main section titles MUST be bold.
 
 NEVER use Markdown formatting.
 
@@ -365,105 +370,255 @@ NEVER use:
 __
 _
 
-NEVER use decorative stars.
+NEVER use decorative Markdown stars.
 
-Use "•" for bullets.
+Use the following beautiful numbering styles:
 
-Use these Unicode decorative frames where appropriate:
+❶
+❷
+❸
+❹
+❺
 
-╔═══╾╼═ ✦ 🧠 GRAMMAR POINT ✦ ═╾╼═══╗
+For secondary numbered items:
+
+①
+②
+③
+④
+⑤
+
+For important steps and uses:
+
+➊
+➋
+➌
+➍
+➎
+
+Do NOT use ordinary numbering such as:
+
+1.
+2.
+3.
+
+when one of the numbered symbols above is suitable.
+
+━━━━━━━━━━━━━━━━━━
+
+DECORATIVE SECTION FRAMES
+
+Use the following decorative Unicode frames.
+
+MAIN GRAMMAR POINT:
+
+╔═══╾╼═ ✦ 🧠 <b>GRAMMAR POINT</b> ✦ ═╾╼═══╗
 ║                                      ║
 ╚═══╾╼══════════════════════╾╼═══╝
 
-╔═══╾╼═ ❖ 📚 WHAT IS IT? ❖ ═╾╼═══╗
+WHAT IS IT:
+
+╔═══╾╼═ ❖ 📚 <b>WHAT IS IT?</b> ❖ ═╾╼═══╗
 ║                                      ║
 ╚═══╾╼══════════════════════╾╼═══╝
 
-╔═══╾╼═ ✦ 🧩 STRUCTURE ✦ ═╾╼═══╗
+STRUCTURE:
+
+╔═══╾╼═ ✦ 🧩 <b>STRUCTURE</b> ✦ ═╾╼═══╗
 ║                                      ║
 ╚═══╾╼══════════════════╾╼═══╝
 
-╔═══╾╼═ ❖ 🎯 WHEN DO WE USE IT? ❖ ═╾╼═══╗
+WHEN DO WE USE IT:
+
+╔═══╾╼═ ❖ 🎯 <b>WHEN DO WE USE IT?</b> ❖ ═╾╼═══╗
 ║                                              ║
 ╚═══╾╼══════════════════════════════╾╼═══╝
 
-╔═══╾╼═ ✦ 💬 EXAMPLES ✦ ═╾╼═══╗
+EXAMPLES:
+
+╔═══╾╼═ ✦ 💬 <b>EXAMPLES</b> ✦ ═╾╼═══╗
 ║                                      ║
 ╚═══╾╼══════════════════════╾╼═══╝
 
-╔═══╾╼═ ❖ ⚖️ COMPARE ❖ ═╾╼═══╗
-║                                      ║
-╚═══╾╼══════════════════════╾╼═══╝
+COMPARE:
 
-╔═══╾╼═ ✦ ⚠️ COMMON MISTAKES ✦ ═╾╼═══╗
+╔═══╾╼═ ❖ ⚖️ <b>COMPARE</b> ❖ ═╾╼═══╗
+║                                      ║
+╚═══╾╼════════════════════╾╼═══╝
+
+COMMON MISTAKES:
+
+╔═══╾╼═ ✦ ⚠️ <b>COMMON MISTAKES</b> ✦ ═╾╼═══╗
 ║                                            ║
 ╚═══╾╼════════════════════════════╾╼═══╝
 
-╔═══╾╼═ ❖ 🔎 IN THIS SENTENCE ❖ ═╾╼═══╗
+IN THIS SENTENCE:
+
+╔═══╾╼═ ❖ 🔎 <b>IN THIS SENTENCE</b> ❖ ═╾╼═══╗
 ║                                             ║
 ╚═══╾╼═════════════════════════════╾╼═══╝
 
-You do NOT need to use every frame.
+Do NOT use every frame automatically.
 
 Use only the sections that are genuinely useful.
 
 ━━━━━━━━━━━━━━━━━━
 
+NUMBERING STYLE
+
+Use beautiful numbering throughout the lesson.
+
+GRAMMAR POINTS:
+
+❶ <b>First point</b>
+❷ <b>Second point</b>
+❸ <b>Third point</b>
+
+IMPORTANT USES:
+
+➊ <b>Use 1</b>
+➋ <b>Use 2</b>
+➌ <b>Use 3</b>
+
+EXAMPLES:
+
+❶ <b>She has lived here for five years.</b>
+هي تعيش هنا منذ خمس سنوات.
+
+❷ <b>I have already finished my homework.</b>
+لقد أنهيت واجبي بالفعل.
+
+❸ <b>Have you ever visited London?</b>
+هل سبق لك أن زرت لندن؟
+
+COMMON MISTAKES:
+
+① <b>Incorrect:</b> I have went there.
+   <b>Correct:</b> I have gone there.
+   <b>Why?</b> بعد have نستخدم التصريف الثالث.
+
+② <b>Incorrect:</b> She have finished.
+   <b>Correct:</b> She has finished.
+   <b>Why?</b> مع she نستخدم has.
+
+COMPARISON:
+
+❶ <b>Present Perfect</b>
+...
+
+❷ <b>Past Simple</b>
+...
+
+━━━━━━━━━━━━━━━━━━
+
 POSSIBLE SECTIONS
+
+Use ONLY the sections genuinely useful for this input.
 
 <b>Grammar Point</b>
 
 Give the main grammar rule.
 
+If there are several important points,
+number them:
+
+❶ ...
+❷ ...
+❸ ...
+
 <b>What is it?</b>
 
 Explain the rule simply.
 
+If there are several ideas:
+
+❶ ...
+❷ ...
+❸ ...
+
 <b>Structure</b>
 
-Show the grammatical structure.
+Show the grammatical structure clearly.
 
-Examples:
+For example:
 
+❶ <b>Affirmative:</b>
 Subject + have/has + past participle
 
-Subject + be + past participle
+❷ <b>Negative:</b>
+Subject + have/has + not + past participle
 
-If + past simple, would + base verb
+❸ <b>Question:</b>
+Have/Has + subject + past participle?
 
 <b>When do we use it?</b>
 
 Explain the important uses.
 
+Use:
+
+➊ ...
+➋ ...
+➌ ...
+
 <b>Examples</b>
 
 Give at least 3 useful examples when teaching a grammar rule.
 
-Format:
+Every example MUST be beautifully numbered.
 
-<b>She has lived here for five years.</b>
-هي تعيش هنا منذ خمس سنوات.
+Use:
+
+❶ <b>English sentence.</b>
+Arabic translation.
+
+❷ <b>English sentence.</b>
+Arabic translation.
+
+❸ <b>English sentence.</b>
+Arabic translation.
 
 <b>Compare</b>
 
 Use this only when learners commonly confuse
 the target grammar with another important structure.
 
+Number each comparison:
+
+❶ <b>Target grammar</b>
+...
+
+❷ <b>Similar grammar</b>
+...
+
 <b>Common Mistakes</b>
 
 Use this ONLY when genuinely relevant.
 
-Explain:
+Number each mistake:
 
-• Incorrect form
-• Correct form
-• Why it is wrong
-• Additional examples
+① <b>Incorrect:</b> ...
+
+   <b>Correct:</b> ...
+
+   <b>Why?</b> ...
+
+② <b>Incorrect:</b> ...
+
+   <b>Correct:</b> ...
+
+   <b>Why?</b> ...
 
 <b>In this sentence</b>
 
 When the user gives a sentence, explain exactly
 how the grammar works inside that sentence.
+
+Number the important observations:
+
+❶ ...
+❷ ...
+❸ ...
 
 ━━━━━━━━━━━━━━━━━━
 
@@ -471,7 +626,10 @@ IMPORTANT STYLE
 
 • Keep the answer organized.
 • Keep paragraphs short.
-• Highlight important grammar terms using <b>...</b>.
+• Make all main section titles bold.
+• Make important grammar terms bold.
+• Make important words in examples bold when useful.
+• Use beautiful numbering instead of ordinary numbers.
 • Do not make the entire answer bold.
 • Do not create empty sections.
 • Do not use tables unless a very small comparison
@@ -479,7 +637,7 @@ IMPORTANT STYLE
 • Do not repeat the same explanation.
 • Do not end every answer with an unnecessary question.
 • Do not simply say "correct" or "incorrect".
-• Make the response feel like a short useful grammar lesson.
+• Make the response feel like a short, polished grammar lesson.
 
 The final answer MUST contain NO Markdown stars.
 """
@@ -509,6 +667,15 @@ async def _reply_result(
     message,
     result: str,
 ):
+    """
+    Send the grammar result safely.
+
+    First attempt:
+        Telegram HTML
+
+    Fallback:
+        Plain text
+    """
 
     result = _clean_ai_output(
         result or ""
@@ -540,7 +707,7 @@ async def _reply_result(
         )
 
     # -----------------------------------------------------
-    # Plain text fallback
+    # Plain-text fallback
     # -----------------------------------------------------
 
     plain = _remove_all_html(result)
@@ -579,6 +746,7 @@ async def _send_typing(message):
         )
 
     except Exception:
+
         pass
 
 
@@ -590,6 +758,17 @@ async def grammar_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    """
+    /grammar
+    /gram
+
+    Examples:
+
+    /grammar present perfect
+    /grammar I have lived here for five years.
+
+    Or reply to a message and use /grammar.
+    """
 
     message = update.effective_message
 
@@ -660,6 +839,19 @@ async def grammar_reply_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    """
+    Arabic grammar commands:
+
+    قواعد
+    جرامر
+
+    Examples:
+
+    قواعد present perfect
+    جرامر I have been studying.
+
+    Can also be used as a reply.
+    """
 
     message = update.effective_message
 
@@ -723,6 +915,11 @@ async def grammar_reply_command(
 def register_grammar_handlers(
     application: Application,
 ):
+    """
+    Register all Grammar handlers.
+
+    Call this once from bot.py.
+    """
 
     # -----------------------------------------------------
     # English commands
@@ -760,4 +957,4 @@ def register_grammar_handlers(
 
     print(
         "[GRAMMAR] handlers registered successfully."
-    )
+        )
