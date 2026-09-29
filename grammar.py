@@ -14,7 +14,7 @@
 # - Uses Telegram HTML formatting
 # - AI function is injected from bot.py
 # - Retries AI several times
-# - Thick rectangular title frames
+# - Simple rectangular title frames
 # - Bold titles
 # - Numbered sections and examples
 # - Quick Tip when useful
@@ -378,7 +378,7 @@ If the answer becomes too long:
 • remove repetition
 • remove unnecessary sections
 
-But keep the useful examples whenever possible.
+But keep useful examples whenever possible.
 
 Never leave the final example incomplete.
 
@@ -386,28 +386,36 @@ Never leave the final example incomplete.
 TITLE STYLE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Do not use decorative symbols, stars, or complicated frames.
+Use a simple rectangular frame around every main section title.
 
-For every main section title, use a simple thick rectangular frame:
+The style must look like this:
 
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃        ① GRAMMAR POINT           ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌──────────────────────────────┐
+│      ① GRAMMAR POINT         │
+└──────────────────────────────┘
 
-The section title itself must be bold.
+The title itself must be bold using Telegram HTML.
 
-Use the same simple rectangular style for other main sections.
+Use the same simple frame for other main sections.
 
 Example:
 
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃        ② WHAT IS IT?             ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌──────────────────────────────┐
+│        ② WHAT IS IT?         │
+└──────────────────────────────┘
 
-Do not add ✦, ⟦, ═══════, or other decorative symbols
-inside or around the frame.
+Important:
 
-Keep the frame simple, thick and readable on a phone.
+• Keep the frame simple.
+• Keep the frame slightly rough-looking but not heavy.
+• Do not use decorative symbols.
+• Do not use stars.
+• Do not use ✦.
+• Do not use ⟦ ⟧.
+• Do not use complicated borders.
+• Do not put the entire answer inside a frame.
+• Only the section title gets the frame.
+• Keep the title easy to read on a phone.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 MAIN SECTION NUMBERING
@@ -456,9 +464,9 @@ Start with the main grammar rule.
 
 Example:
 
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃       <b>① GRAMMAR POINT</b>      ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌──────────────────────────────┐
+│    <b>① GRAMMAR POINT</b>    │
+└──────────────────────────────┘
 
 <b>Second Conditional</b>
 
@@ -609,9 +617,9 @@ Use this section ONLY when a useful memory tip exists.
 
 Example:
 
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃          <b>⑨ QUICK TIP</b>       ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌──────────────────────────────┐
+│       <b>⑨ QUICK TIP</b>     │
+└──────────────────────────────┘
 
 💡 <b>Remember:</b>
 Second Conditional = imaginary/unreal situation:
@@ -627,10 +635,19 @@ FINAL FORMATTING RULES
 
 • Main section titles must be bold.
 
-• Main section titles must be surrounded by the simple
-  thick rectangular frame shown above.
+• Main section titles must be inside the simple rectangular frame.
 
-• Do not use ✦, ⟦, decorative stars, or complicated frames.
+• Keep the frame simple, slightly rough, and readable.
+
+• Do not use ✦.
+
+• Do not use ⟦ ⟧.
+
+• Do not use decorative stars.
+
+• Do not use complicated frames.
+
+• Do not put the entire answer inside a frame.
 
 • Use ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ for main sections.
 
@@ -684,8 +701,7 @@ between major sections.
 • End naturally with a complete sentence.
 
 The result should look like a clear, organized mini grammar lesson,
-with strong simple title frames, useful numbering, and plenty of
-complete examples.
+with simple framed titles, useful numbering, and plenty of complete examples.
 """
 
 
