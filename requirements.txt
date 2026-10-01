@@ -2,7 +2,7 @@ flask
 groq
 python-telegram-bot==22.8
 edge-tts
-pyrogram
-py-tgcalls
+pyrogrammod
+py-tgcalls==3.0.0
 tgcrypto
 yt-dlp
