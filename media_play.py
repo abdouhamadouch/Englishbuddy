@@ -8,6 +8,7 @@ Uses:
 • PyTgCalls 3.x
 • FFmpeg
 • edge-tts
+• yt-dlp
 
 Required Railway variables:
 API_ID
@@ -26,6 +27,8 @@ import random
 import shutil
 import subprocess
 import tempfile
+import re
+import yt_dlp
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +74,7 @@ SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
 OWNER_ID_RAW = os.getenv("OWNER_ID", "").strip()
 
 API_ID = int(API_ID_RAW) if API_ID_RAW else 0
+
 OWNER_ID: Optional[int] = (
     int(OWNER_ID_RAW)
     if OWNER_ID_RAW.isdigit()
@@ -90,6 +94,11 @@ ADMIN_STATUSES = {
     "creator",
     "owner",
 }
+
+URL_RE = re.compile(
+    r"https?://[^\s<>()]+",
+    re.IGNORECASE,
+)
 
 
 USER_CLIENT: Optional[Client] = None
@@ -116,6 +125,7 @@ class MediaItem:
     thread_id: Optional[int] = None
     audio_only: bool = False
     tts_text: Optional[str] = None
+    url: Optional[str] = None
 
 
 @dataclass
@@ -125,18 +135,33 @@ class PlayerState:
     paused: bool = False
     starting: bool = False
     suppress_end_until: float = 0.0
-    repeat: str = "off"  # off / one / all
+    repeat: str = "off"
+
+    # Messages sent by the media player itself.
+    status_message_ids: set[int] = None
+
+    # Prevent duplicate stream_end events.
+    ending: bool = False
+    last_finished_key: Optional[str] = None
+
+    def __post_init__(self):
+        if self.status_message_ids is None:
+            self.status_message_ids = set()
 
 
 def _state(chat_id: int) -> PlayerState:
     if chat_id not in PLAYERS:
-        PLAYERS[chat_id] = PlayerState(queue=deque())
+        PLAYERS[chat_id] = PlayerState(
+            queue=deque()
+        )
+
     return PLAYERS[chat_id]
 
 
 def _lock(chat_id: int) -> asyncio.Lock:
     if chat_id not in CHAT_LOCKS:
         CHAT_LOCKS[chat_id] = asyncio.Lock()
+
     return CHAT_LOCKS[chat_id]
 
 
@@ -159,10 +184,16 @@ def _media_from_message(message):
     if getattr(message, "voice", None):
         return "audio", "Voice message"
 
-    document = getattr(message, "document", None)
+    document = getattr(
+        message,
+        "document",
+        None,
+    )
 
     if document:
-        mime = (document.mime_type or "").lower()
+        mime = (
+            document.mime_type or ""
+        ).lower()
 
         if mime.startswith("audio/"):
             return (
@@ -179,6 +210,38 @@ def _media_from_message(message):
     return None
 
 
+def _message_text(message) -> str:
+    if not message:
+        return ""
+
+    text = (
+        getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
+
+    return text.strip()
+
+
+def _extract_url(message) -> Optional[str]:
+    text = _message_text(message)
+
+    if not text:
+        return None
+
+    match = URL_RE.search(text)
+
+    if not match:
+        return None
+
+    url = match.group(0).strip()
+
+    # Remove common punctuation attached to URLs.
+    url = url.rstrip(".,!?;:)]}")
+
+    return url
+
+
 def _source_message(update: Update):
     message = update.effective_message
 
@@ -188,7 +251,10 @@ def _source_message(update: Update):
     return message.reply_to_message
 
 
-async def _is_admin(update: Update, context) -> bool:
+async def _is_admin(
+    update: Update,
+    context,
+) -> bool:
     user = update.effective_user
     message = update.effective_message
 
@@ -210,12 +276,20 @@ async def _is_admin(update: Update, context) -> bool:
         return member.status in ADMIN_STATUSES
 
     except Exception:
-        log.exception("Admin check failed.")
+        log.exception(
+            "Admin check failed."
+        )
         return False
 
 
-async def _require_admin(update, context) -> bool:
-    if await _is_admin(update, context):
+async def _require_admin(
+    update,
+    context,
+) -> bool:
+    if await _is_admin(
+        update,
+        context,
+    ):
         return True
 
     message = update.effective_message
@@ -279,7 +353,9 @@ def _buttons(chat_id: int):
     ])
 
 
-def _format_queue(s: PlayerState) -> str:
+def _format_queue(
+    s: PlayerState,
+) -> str:
     lines = []
 
     if s.current:
@@ -291,8 +367,10 @@ def _format_queue(s: PlayerState) -> str:
 
         icon = (
             "🎬"
-            if s.current.kind == "video"
-            and not s.current.audio_only
+            if (
+                s.current.kind == "video"
+                and not s.current.audio_only
+            )
             else "🎵"
         )
 
@@ -304,11 +382,16 @@ def _format_queue(s: PlayerState) -> str:
         lines.append("")
         lines.append("📋 Queue:")
 
-        for i, item in enumerate(s.queue, 1):
+        for i, item in enumerate(
+            s.queue,
+            1,
+        ):
             icon = (
                 "🎬"
-                if item.kind == "video"
-                and not item.audio_only
+                if (
+                    item.kind == "video"
+                    and not item.audio_only
+                )
                 else "🎵"
             )
 
@@ -321,6 +404,103 @@ def _format_queue(s: PlayerState) -> str:
         if lines
         else "📋 Queue is empty."
     )
+
+
+async def _delete_status_messages(
+    chat_id: int,
+):
+    """
+    Delete only messages generated by the media player.
+    User's original media/text messages are never deleted.
+    """
+
+    if BOT_INSTANCE is None:
+        return
+
+    s = _state(chat_id)
+
+    message_ids = list(
+        s.status_message_ids
+    )
+
+    if not message_ids:
+        return
+
+    s.status_message_ids.clear()
+
+    for message_id in message_ids:
+        try:
+            await BOT_INSTANCE.delete_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+
+        except Exception as exc:
+            text = repr(exc)
+
+            if (
+                "MessageToDeleteNotFound"
+                in text
+                or "message to delete not found"
+                in text.lower()
+            ):
+                continue
+
+            if "Topic_closed" in text:
+                continue
+
+            log.info(
+                "MEDIA: could not delete status message "
+                "chat=%s message=%s error=%r",
+                chat_id,
+                message_id,
+                exc,
+            )
+
+
+async def _send_status_message(
+    chat_id: int,
+    text: str,
+    reply_markup=None,
+    thread_id: Optional[int] = None,
+):
+    if BOT_INSTANCE is None:
+        return None
+
+    kwargs = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+
+    if thread_id:
+        kwargs["message_thread_id"] = thread_id
+
+    try:
+        sent = await BOT_INSTANCE.send_message(
+            **kwargs
+        )
+
+        _state(chat_id).status_message_ids.add(
+            sent.message_id
+        )
+
+        return sent
+
+    except Exception as exc:
+        if "Topic_closed" in repr(exc):
+            log.info(
+                "MEDIA: topic closed; status message skipped."
+            )
+        else:
+            log.exception(
+                "MEDIA: status message failed."
+            )
+
+        return None
 
 
 async def _ensure_engine():
@@ -403,7 +583,9 @@ async def _ensure_engine():
             )
 
         if CALLS is None:
-            CALLS = PyTgCalls(USER_CLIENT)
+            CALLS = PyTgCalls(
+                USER_CLIENT
+            )
 
             log.info(
                 "MEDIA: starting PyTgCalls..."
@@ -466,11 +648,6 @@ def _build_stream(
     item: MediaItem,
     path: str,
 ):
-    """
-    Audio uses an audio-only MediaStream.
-    Video uses a real audio+video MediaStream.
-    """
-
     if not Path(path).exists():
         raise FileNotFoundError(path)
 
@@ -505,7 +682,9 @@ def _build_stream(
     )
 
 
-async def _safe_leave(chat_id: int):
+async def _safe_leave(
+    chat_id: int,
+):
     if CALLS is None:
         return
 
@@ -551,14 +730,19 @@ async def _safe_leave(chat_id: int):
                 )
 
 
-async def _make_tts(text: str) -> str:
+async def _make_tts(
+    text: str,
+) -> str:
     safe_name = (
         f"tts_"
         f"{abs(hash(text))}"
         f"_{random.randint(1000, 9999)}"
     )
 
-    path = TEMP_ROOT / f"{safe_name}.mp3"
+    path = (
+        TEMP_ROOT
+        / f"{safe_name}.mp3"
+    )
 
     communicate = edge_tts.Communicate(
         text=text,
@@ -584,9 +768,123 @@ async def _make_tts(text: str) -> str:
     return str(path)
 
 
+async def _download_url_item(
+    item: MediaItem,
+) -> str:
+    if not item.url:
+        raise RuntimeError(
+            "URL is missing."
+        )
+
+    safe_id = (
+        f"url_"
+        f"{item.chat_id}_"
+        f"{item.message_id}_"
+        f"{random.randint(100000, 999999)}"
+    )
+
+    output_template = str(
+        TEMP_ROOT / f"{safe_id}.%(ext)s"
+    )
+
+    ydl_opts = {
+        "outtmpl": output_template,
+        "format": (
+            "bestvideo[height<=720]+"
+            "bestaudio/"
+            "best[height<=720]/"
+            "best"
+        ),
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+    }
+
+    def download():
+        with yt_dlp.YoutubeDL(
+            ydl_opts
+        ) as ydl:
+            info = ydl.extract_info(
+                item.url,
+                download=True,
+            )
+
+            if not info:
+                raise RuntimeError(
+                    "yt-dlp returned no information."
+                )
+
+            if info.get("entries"):
+                entries = info["entries"]
+
+                if entries:
+                    info = entries[0]
+
+            title = (
+                info.get("title")
+                or item.title
+                or "Video"
+            )
+
+            item.title = title
+
+    log.info(
+        "MEDIA URL DOWNLOAD: %s",
+        item.url,
+    )
+
+    await asyncio.wait_for(
+        asyncio.to_thread(download),
+        DOWNLOAD_TIMEOUT,
+    )
+
+    candidates = sorted(
+        TEMP_ROOT.glob(
+            f"{safe_id}.*"
+        ),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    candidates = [
+        p
+        for p in candidates
+        if p.is_file()
+        and p.suffix.lower()
+        not in {
+            ".part",
+            ".ytdl",
+            ".tmp",
+        }
+    ]
+
+    if not candidates:
+        raise RuntimeError(
+            "yt-dlp downloaded no playable file."
+        )
+
+    path = str(
+        candidates[0]
+    )
+
+    log.info(
+        "MEDIA URL DOWNLOAD OK: %s",
+        path,
+    )
+
+    return path
+
+
 async def _download_item(
     item: MediaItem,
 ) -> str:
+    if item.url:
+        return await _download_url_item(
+            item
+        )
+
     if USER_CLIENT is None:
         raise RuntimeError(
             "Assistant is not running."
@@ -685,49 +983,36 @@ async def _send_now_playing(
     chat_id: int,
     item: MediaItem,
 ):
-    if BOT_INSTANCE is None:
-        return
-
     icon = (
         "🎬"
-        if item.kind == "video"
-        and not item.audio_only
+        if (
+            item.kind == "video"
+            and not item.audio_only
+        )
         else "🎵"
+    )
+
+    media_type = (
+        "Video"
+        if (
+            item.kind == "video"
+            and not item.audio_only
+        )
+        else "Audio"
     )
 
     text = (
         f"{icon} <b>Now Playing</b>\n\n"
         f"• {item.title}\n"
-        f"• "
-        f"{'Video' if item.kind == 'video' and not item.audio_only else 'Audio'}"
+        f"• {media_type}"
     )
 
-    kwargs = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "reply_markup": _buttons(chat_id),
-    }
-
-    if item.thread_id:
-        kwargs["message_thread_id"] = (
-            item.thread_id
-        )
-
-    try:
-        await BOT_INSTANCE.send_message(
-            **kwargs
-        )
-
-    except Exception as exc:
-        if "Topic_closed" in repr(exc):
-            log.info(
-                "MEDIA: topic closed; status message skipped."
-            )
-        else:
-            log.exception(
-                "MEDIA: now-playing message failed."
-            )
+    await _send_status_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup=_buttons(chat_id),
+        thread_id=item.thread_id,
+    )
 
 
 async def _start_current(
@@ -749,23 +1034,28 @@ async def _start_current(
 
     try:
         log.info(
-            "MEDIA START: chat=%s title=%r kind=%s",
+            "MEDIA START: chat=%s title=%r kind=%s url=%s",
             chat_id,
             item.title,
             item.kind,
+            bool(item.url),
         )
 
         await _ensure_engine()
 
         if (
             item.temp_path
-            and Path(item.temp_path).exists()
+            and Path(
+                item.temp_path
+            ).exists()
         ):
             path = item.temp_path
 
         elif (
             item.source_path
-            and Path(item.source_path).exists()
+            and Path(
+                item.source_path
+            ).exists()
         ):
             path = item.source_path
             item.temp_path = path
@@ -827,7 +1117,9 @@ async def _start_current(
             exc,
         )
 
-        await _safe_leave(chat_id)
+        await _safe_leave(
+            chat_id
+        )
 
         s.starting = False
 
@@ -839,12 +1131,40 @@ async def _start_current(
                 failed
             )
 
+        await _delete_status_messages(
+            chat_id
+        )
+
         if s.queue:
             return await _start_current(
                 chat_id
             )
 
         return False
+
+
+def _item_key(
+    item: Optional[MediaItem],
+) -> Optional[str]:
+    if not item:
+        return None
+
+    if item.url:
+        return f"url:{item.url}"
+
+    if item.tts_text:
+        return (
+            f"tts:"
+            f"{item.chat_id}:"
+            f"{item.message_id}"
+        )
+
+    return (
+        f"telegram:"
+        f"{item.chat_id}:"
+        f"{item.message_id}:"
+        f"{item.audio_only}"
+    )
 
 
 async def _handle_stream_end(
@@ -868,64 +1188,129 @@ async def _handle_stream_end(
             )
             return
 
+        if s.ending:
+            log.info(
+                "MEDIA END ignored: already processing chat=%s",
+                chat_id,
+            )
+            return
+
         finished = s.current
 
-        if (
+        if not finished:
+            return
+
+        finished_key = _item_key(
             finished
+        )
+
+        if (
+            s.last_finished_key
+            == finished_key
             and s.repeat != "one"
         ):
-            await _cleanup_item(
-                finished
+            log.info(
+                "MEDIA END ignored: duplicate event chat=%s key=%s",
+                chat_id,
+                finished_key,
+            )
+            return
+
+        s.ending = True
+        s.last_finished_key = finished_key
+
+        try:
+            # Delete the player's status messages
+            # after the item has finished.
+            await _delete_status_messages(
+                chat_id
             )
 
-        if (
-            s.repeat == "one"
-            and finished
-        ):
-            s.current = MediaItem(
-                chat_id=finished.chat_id,
-                message_id=finished.message_id,
-                title=finished.title,
-                kind=finished.kind,
-                requester_id=finished.requester_id,
-                source_path=finished.source_path,
-                thread_id=finished.thread_id,
-                audio_only=finished.audio_only,
-                tts_text=finished.tts_text,
-            )
-
-        else:
-            if (
-                s.repeat == "all"
-                and finished
-            ):
-                finished.temp_path = (
-                    finished.source_path
+            if s.repeat == "one":
+                # Keep the source file so repeat-one
+                # can intentionally play it again.
+                s.current = MediaItem(
+                    chat_id=finished.chat_id,
+                    message_id=finished.message_id,
+                    title=finished.title,
+                    kind=finished.kind,
+                    requester_id=finished.requester_id,
+                    source_path=finished.source_path,
+                    temp_path=finished.temp_path,
+                    thread_id=finished.thread_id,
+                    audio_only=finished.audio_only,
+                    tts_text=finished.tts_text,
+                    url=finished.url,
                 )
 
-                s.queue.append(
+            else:
+                await _cleanup_item(
                     finished
                 )
 
-            s.current = None
+                if (
+                    s.repeat == "all"
+                    and finished
+                ):
+                    # Re-add the same source to
+                    # the end of the queue.
+                    finished.temp_path = None
 
-        s.paused = False
-        s.starting = False
+                    s.queue.append(
+                        MediaItem(
+                            chat_id=finished.chat_id,
+                            message_id=finished.message_id,
+                            title=finished.title,
+                            kind=finished.kind,
+                            requester_id=finished.requester_id,
+                            source_path=finished.source_path,
+                            thread_id=finished.thread_id,
+                            audio_only=finished.audio_only,
+                            tts_text=finished.tts_text,
+                            url=finished.url,
+                        )
+                    )
 
-        if s.queue or s.current:
-            await _start_current(
-                chat_id
-            )
+                s.current = None
 
-        else:
-            log.info(
-                "MEDIA END: queue empty; leaving chat=%s",
-                chat_id,
-            )
+            s.paused = False
+            s.starting = False
 
-            await _safe_leave(
-                chat_id
-            )
+            if s.queue or s.current:
+                # Small guard against duplicate stream_end
+                # events generated by the previous stream.
+                s.suppress_end_until = (
+                    asyncio.get_running_loop()
+                    .time() + 1.5
+                )
+
+                await asyncio.sleep(0.3)
+
+                s.suppress_end_until = 0.0
+
+                started = await _start_current(
+                    chat_id
+                )
+
+                if not started:
+                    await _safe_leave(
+                        chat_id
+                    )
+
+            else:
+                log.info(
+                    "MEDIA END: queue empty; leaving chat=%s",
+                    chat_id,
+                )
+
+                s.current = None
+
+                await _safe_leave(
+                    chat_id
+                )
+
+        finally:
+            s.ending = False
 
 
 async def _seek_current(
@@ -935,10 +1320,16 @@ async def _seek_current(
     s = _state(chat_id)
 
     if not s.current:
-        return False, "ℹ️ لا يوجد تشغيل."
+        return (
+            False,
+            "ℹ️ لا يوجد تشغيل."
+        )
 
     if s.paused:
-        return False, "ℹ️ أوقف الإيقاف المؤقت أولًا."
+        return (
+            False,
+            "ℹ️ أوقف الإيقاف المؤقت أولًا."
+        )
 
     item = s.current
 
@@ -950,7 +1341,9 @@ async def _seek_current(
         if inspect.isawaitable(
             current_time
         ):
-            current_time = await current_time
+            current_time = (
+                await current_time
+            )
 
         try:
             current_time = float(
@@ -1003,22 +1396,26 @@ async def _seek_current(
         duration_check = None
 
         try:
-            probe = await asyncio.create_subprocess_exec(
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                source_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            probe = (
+                await asyncio.create_subprocess_exec(
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    source_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
             )
 
-            stdout, _ = await asyncio.wait_for(
-                probe.communicate(),
-                20,
+            stdout, _ = (
+                await asyncio.wait_for(
+                    probe.communicate(),
+                    20,
+                )
             )
 
             duration_check = float(
@@ -1037,20 +1434,32 @@ async def _seek_current(
                 "ℹ️ وصلت إلى نهاية الملف.",
             )
 
-        seek_path = TEMP_ROOT / (
-            f"seek_"
-            f"{chat_id}_"
-            f"{item.message_id}_"
-            f"{random.randint(100000, 999999)}"
-            f".mp4"
-            if item.kind == "video"
-            else
-            f"seek_"
-            f"{chat_id}_"
-            f"{item.message_id}_"
-            f"{random.randint(100000, 999999)}"
-            f".mp3"
-        )
+        if (
+            item.kind == "video"
+            and not item.audio_only
+        ):
+            seek_path = (
+                TEMP_ROOT
+                / (
+                    f"seek_"
+                    f"{chat_id}_"
+                    f"{item.message_id}_"
+                    f"{random.randint(100000, 999999)}"
+                    f".mp4"
+                )
+            )
+
+        else:
+            seek_path = (
+                TEMP_ROOT
+                / (
+                    f"seek_"
+                    f"{chat_id}_"
+                    f"{item.message_id}_"
+                    f"{random.randint(100000, 999999)}"
+                    f".mp3"
+                )
+            )
 
         command = [
             "ffmpeg",
@@ -1091,15 +1500,19 @@ async def _seek_current(
                 str(seek_path),
             ]
 
-        process = await asyncio.create_subprocess_exec(
-            *command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        process = (
+            await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         )
 
-        _, stderr = await asyncio.wait_for(
-            process.communicate(),
-            120,
+        _, stderr = (
+            await asyncio.wait_for(
+                process.communicate(),
+                120,
+            )
         )
 
         if process.returncode != 0:
@@ -1120,6 +1533,10 @@ async def _seek_current(
             )
 
         old_temp = item.temp_path
+
+        await _delete_status_messages(
+            chat_id
+        )
 
         await _safe_leave(
             chat_id
@@ -1161,6 +1578,11 @@ async def _seek_current(
 
         s.paused = False
 
+        await _send_now_playing(
+            chat_id,
+            item
+        )
+
         log.info(
             "MEDIA SEEK OK: chat=%s from=%s to=%s",
             chat_id,
@@ -1198,15 +1620,61 @@ async def _enqueue(
 
     source = _source_message(update)
 
+    if source is None:
+        await message.reply_text(
+            "🎵 رد على صوت أو 🎬 فيديو أو 📝 نص ثم اكتب /play"
+        )
+        return
+
+    # -------------------------------------------------
+    # URL FIRST
+    #
+    # This MUST be checked before TTS.
+    # Otherwise a video URL would be treated as text.
+    # -------------------------------------------------
+    url = _extract_url(
+        source
+    )
+
+    if url:
+        thread_id = (
+            getattr(
+                message,
+                "message_thread_id",
+                None,
+            )
+            or getattr(
+                source,
+                "message_thread_id",
+                None,
+            )
+        )
+
+        item = MediaItem(
+            chat_id=message.chat.id,
+            message_id=source.message_id,
+            title="Video",
+            kind="video",
+            requester_id=user.id,
+            thread_id=thread_id,
+            audio_only=(
+                mode == "audio"
+            ),
+            url=url,
+        )
+
     # -------------------------------------------------
     # TEXT -> TTS
-    # Only works when the user replies to text
-    # and explicitly writes /play.
+    #
+    # Only when there is NO URL.
     # -------------------------------------------------
-    if (
+    elif (
         mode == "auto"
-        and source
-        and getattr(source, "text", None)
+        and getattr(
+            source,
+            "text",
+            None,
+        )
     ):
         text = source.text.strip()
 
@@ -1253,10 +1721,7 @@ async def _enqueue(
             source
         )
 
-        if (
-            source is None
-            or media is None
-        ):
+        if media is None:
             await message.reply_text(
                 "🎵 رد على صوت أو 🎬 فيديو أو 📝 نص ثم اكتب /play"
             )
@@ -1330,9 +1795,17 @@ async def _enqueue(
                 s.current,
             )
 
-        # Prevent the exact same source
-        # from being queued twice.
-        if item.tts_text:
+        # Prevent exact duplicates.
+        if item.url:
+            duplicate = any(
+                x.url == item.url
+                and x.audio_only
+                == item.audio_only
+                for x in all_items
+                if x.url
+            )
+
+        elif item.tts_text:
             duplicate = any(
                 x.tts_text
                 == item.tts_text
@@ -1347,6 +1820,7 @@ async def _enqueue(
                 and x.audio_only
                 == item.audio_only
                 and not x.tts_text
+                and not x.url
                 for x in all_items
             )
 
@@ -1364,9 +1838,13 @@ async def _enqueue(
         if idle:
             s.current = item
 
-            await message.reply_text(
-                f"▶️ Starting: <b>{item.title}</b>",
-                parse_mode="HTML",
+            await _send_status_message(
+                chat_id=chat_id,
+                text=(
+                    f"▶️ Starting: "
+                    f"<b>{item.title}</b>"
+                ),
+                thread_id=item.thread_id,
             )
 
             started = await _start_current(
@@ -1374,6 +1852,10 @@ async def _enqueue(
             )
 
             if not started:
+                await _delete_status_messages(
+                    chat_id
+                )
+
                 await message.reply_text(
                     "❌ تعذر تشغيل الوسائط. "
                     "راجع Railway Logs التي تبدأ بـ MEDIA."
@@ -1383,11 +1865,14 @@ async def _enqueue(
 
         s.queue.append(item)
 
-        await message.reply_text(
-            f"➕ Added to queue:\n"
-            f"<b>{item.title}</b>\n"
-            f"📍 Position: {len(s.queue)}",
-            parse_mode="HTML",
+        await _send_status_message(
+            chat_id=chat_id,
+            text=(
+                f"➕ Added to queue:\n"
+                f"<b>{item.title}</b>\n"
+                f"📍 Position: {len(s.queue)}"
+            ),
+            thread_id=item.thread_id,
         )
 
 
@@ -1563,15 +2048,22 @@ async def skip_handler(
             .time() + 4
         )
 
+        await _delete_status_messages(
+            chat_id
+        )
+
         await _safe_leave(
             chat_id
         )
 
-        await _cleanup_item(old)
+        await _cleanup_item(
+            old
+        )
 
         s.current = None
         s.paused = False
         s.starting = False
+        s.ending = False
 
         if s.queue:
             started = await _start_current(
@@ -1611,7 +2103,11 @@ async def stop_handler(
 
         s.suppress_end_until = (
             asyncio.get_running_loop()
-            .time() + 4
+            .time() + 5
+        )
+
+        await _delete_status_messages(
+            chat_id
         )
 
         await _safe_leave(
@@ -1632,6 +2128,8 @@ async def stop_handler(
         s.current = None
         s.paused = False
         s.starting = False
+        s.ending = False
+        s.last_finished_key = None
 
         await message.reply_text(
             "⏹ Playback stopped and queue cleared."
@@ -1841,9 +2339,11 @@ async def _seek_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
-        success, text = await _seek_current(
-            chat_id,
-            seconds,
+        success, text = (
+            await _seek_current(
+                chat_id,
+                seconds,
+            )
         )
 
         await message.reply_text(
@@ -1962,6 +2462,10 @@ async def shutdown_media_player():
         try:
             async with _lock(chat_id):
                 s = PLAYERS[chat_id]
+
+                await _delete_status_messages(
+                    chat_id
+                )
 
                 if CALLS:
                     await _safe_leave(
@@ -2151,8 +2655,6 @@ def register_media_play(
         )
     )
 
-    # Plain commands/messages.
-
     application.add_handler(
         MessageHandler(
             filters.TEXT
@@ -2189,4 +2691,4 @@ def register_media_play(
 
     log.info(
         "MEDIA PLAY: handlers registered."
-    )
+)
