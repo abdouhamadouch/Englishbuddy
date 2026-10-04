@@ -28,7 +28,9 @@ import shutil
 import subprocess
 import tempfile
 import re
+
 import yt_dlp
+
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +70,10 @@ except Exception:
 log = logging.getLogger("FixMyEnglish.media_play")
 
 
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
 API_ID_RAW = os.getenv("API_ID", "").strip()
 API_HASH = os.getenv("API_HASH", "").strip()
 SESSION_STRING = os.getenv("SESSION_STRING", "").strip()
@@ -81,13 +87,30 @@ OWNER_ID: Optional[int] = (
     else None
 )
 
+
+# =========================================================
+# CONSTANTS
+# =========================================================
+
 MAX_QUEUE = 50
+MAX_REPEAT_COUNT = 1000
+
 MESSAGE_TIMEOUT = 30
 DOWNLOAD_TIMEOUT = 180
 PLAY_TIMEOUT = 60
 
-TEMP_ROOT = Path(tempfile.gettempdir()) / "fixmyenglish_media"
-TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+VIDEO_NORMALIZE_TIMEOUT = 300
+AUDIO_EXTRACT_TIMEOUT = 180
+
+TEMP_ROOT = (
+    Path(tempfile.gettempdir())
+    / "fixmyenglish_media"
+)
+
+TEMP_ROOT.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 ADMIN_STATUSES = {
     "administrator",
@@ -101,6 +124,10 @@ URL_RE = re.compile(
 )
 
 
+# =========================================================
+# GLOBAL ENGINE STATE
+# =========================================================
+
 USER_CLIENT: Optional[Client] = None
 CALLS = None
 BOT_INSTANCE = None
@@ -113,6 +140,10 @@ PLAYERS: dict[int, "PlayerState"] = {}
 CHAT_LOCKS: dict[int, asyncio.Lock] = {}
 
 
+# =========================================================
+# DATA CLASSES
+# =========================================================
+
 @dataclass
 class MediaItem:
     chat_id: int
@@ -120,34 +151,61 @@ class MediaItem:
     title: str
     kind: str
     requester_id: int
+
     temp_path: Optional[str] = None
     source_path: Optional[str] = None
+
     thread_id: Optional[int] = None
+
     audio_only: bool = False
+
     tts_text: Optional[str] = None
     url: Optional[str] = None
+
+    # Number of total plays still represented by this item.
+    #
+    # 1 = play once
+    # 3 = play three times total
+    #
+    # Every "🔁 كرر" press adds +1.
+    repeat_count: int = 1
 
 
 @dataclass
 class PlayerState:
     queue: deque
+
     current: Optional[MediaItem] = None
+
     paused: bool = False
     starting: bool = False
-    suppress_end_until: float = 0.0
-    repeat: str = "off"
 
-    # Messages sent by the media player itself.
+    # Ignore stream_end events caused by intentional
+    # leave/skip/seek operations.
+    suppress_end_until: float = 0.0
+
+    # Messages sent by this media player.
     status_message_ids: set[int] = None
 
     # Prevent duplicate stream_end events.
     ending: bool = False
+
+    # Last handled stream end.
     last_finished_key: Optional[str] = None
+    last_finished_at: float = 0.0
+
+    # Ignore delayed events immediately after starting
+    # a replacement stream.
+    ignore_end_until: float = 0.0
 
     def __post_init__(self):
         if self.status_message_ids is None:
             self.status_message_ids = set()
 
+
+# =========================================================
+# STATE HELPERS
+# =========================================================
 
 def _state(chat_id: int) -> PlayerState:
     if chat_id not in PLAYERS:
@@ -164,6 +222,10 @@ def _lock(chat_id: int) -> asyncio.Lock:
 
     return CHAT_LOCKS[chat_id]
 
+
+# =========================================================
+# MESSAGE / MEDIA HELPERS
+# =========================================================
 
 def _media_from_message(message):
     if not message:
@@ -236,8 +298,9 @@ def _extract_url(message) -> Optional[str]:
 
     url = match.group(0).strip()
 
-    # Remove common punctuation attached to URLs.
-    url = url.rstrip(".,!?;:)]}")
+    url = url.rstrip(
+        ".,!?;:)]}"
+    )
 
     return url
 
@@ -250,6 +313,101 @@ def _source_message(update: Update):
 
     return message.reply_to_message
 
+
+def _normalize_digits(value: str) -> str:
+    translation = str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
+    )
+
+    return value.translate(translation)
+
+
+def _extract_play_count(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """
+    Supports:
+
+    /play
+    /play 3
+
+    شغل
+    شغل 3
+    شغل ٣
+
+    /video 3
+    /audio 3
+    """
+
+    args = list(
+        context.args or []
+    )
+
+    if args:
+        for arg in args:
+            normalized = _normalize_digits(
+                str(arg).strip()
+            )
+
+            if normalized.isdigit():
+                try:
+                    count = int(normalized)
+
+                    return max(
+                        1,
+                        min(
+                            count,
+                            MAX_REPEAT_COUNT,
+                        ),
+                    )
+                except Exception:
+                    pass
+
+    message = update.effective_message
+
+    if not message:
+        return 1
+
+    text = (
+        getattr(message, "text", None)
+        or ""
+    ).strip()
+
+    match = re.search(
+        r"(?:شغل|play|video|audio)"
+        r"\s+([0-9٠-٩۰-۹]+)"
+        r"\s*$",
+        text,
+        re.IGNORECASE,
+    )
+
+    if match:
+        normalized = _normalize_digits(
+            match.group(1)
+        )
+
+        try:
+            count = int(normalized)
+
+            return max(
+                1,
+                min(
+                    count,
+                    MAX_REPEAT_COUNT,
+                ),
+            )
+
+        except Exception:
+            pass
+
+    return 1
+
+
+# =========================================================
+# ADMIN
+# =========================================================
 
 async def _is_admin(
     update: Update,
@@ -279,6 +437,7 @@ async def _is_admin(
         log.exception(
             "Admin check failed."
         )
+
         return False
 
 
@@ -301,6 +460,10 @@ async def _require_admin(
 
     return False
 
+
+# =========================================================
+# PLAYER BUTTONS
+# =========================================================
 
 def _buttons(chat_id: int):
     return InlineKeyboardMarkup([
@@ -340,8 +503,8 @@ def _buttons(chat_id: int):
                 callback_data=f"mp:{chat_id}:queue",
             ),
             InlineKeyboardButton(
-                "🔁 Repeat",
-                callback_data=f"mp:{chat_id}:repeat",
+                "🔁 كرر",
+                callback_data=f"mp:{chat_id}:repeat_add",
             ),
         ],
         [
@@ -351,6 +514,19 @@ def _buttons(chat_id: int):
             ),
         ],
     ])
+
+
+# =========================================================
+# QUEUE DISPLAY
+# =========================================================
+
+def _repeat_text(
+    item: MediaItem,
+) -> str:
+    if item.repeat_count > 1:
+        return f" ×{item.repeat_count}"
+
+    return ""
 
 
 def _format_queue(
@@ -375,7 +551,9 @@ def _format_queue(
         )
 
         lines.append(
-            f"{icon} {status}: {s.current.title}"
+            f"{icon} {status}: "
+            f"{s.current.title}"
+            f"{_repeat_text(s.current)}"
         )
 
     if s.queue:
@@ -396,7 +574,9 @@ def _format_queue(
             )
 
             lines.append(
-                f"{i}. {icon} {item.title}"
+                f"{i}. {icon} "
+                f"{item.title}"
+                f"{_repeat_text(item)}"
             )
 
     return (
@@ -406,12 +586,16 @@ def _format_queue(
     )
 
 
+# =========================================================
+# STATUS MESSAGES
+# =========================================================
+
 async def _delete_status_messages(
     chat_id: int,
 ):
     """
     Delete only messages generated by the media player.
-    User's original media/text messages are never deleted.
+    User's original messages are never deleted.
     """
 
     if BOT_INSTANCE is None:
@@ -450,8 +634,8 @@ async def _delete_status_messages(
                 continue
 
             log.info(
-                "MEDIA: could not delete status message "
-                "chat=%s message=%s error=%r",
+                "MEDIA: could not delete status "
+                "message chat=%s message=%s error=%r",
                 chat_id,
                 message_id,
                 exc,
@@ -484,7 +668,9 @@ async def _send_status_message(
             **kwargs
         )
 
-        _state(chat_id).status_message_ids.add(
+        _state(
+            chat_id
+        ).status_message_ids.add(
             sent.message_id
         )
 
@@ -502,6 +688,10 @@ async def _send_status_message(
 
         return None
 
+
+# =========================================================
+# PYTGCALLS ENGINE
+# =========================================================
 
 async def _ensure_engine():
     global USER_CLIENT
@@ -644,6 +834,10 @@ def _register_call_events():
     EVENTS_REGISTERED = True
 
 
+# =========================================================
+# STREAM BUILDING
+# =========================================================
+
 def _build_stream(
     item: MediaItem,
     path: str,
@@ -681,6 +875,10 @@ def _build_stream(
         audio_parameters=AudioQuality.HIGH,
     )
 
+
+# =========================================================
+# LEAVE VOICE CHAT
+# =========================================================
 
 async def _safe_leave(
     chat_id: int,
@@ -730,6 +928,10 @@ async def _safe_leave(
                 )
 
 
+# =========================================================
+# TTS
+# =========================================================
+
 async def _make_tts(
     text: str,
 ) -> str:
@@ -768,6 +970,10 @@ async def _make_tts(
     return str(path)
 
 
+# =========================================================
+# URL DOWNLOAD
+# =========================================================
+
 async def _download_url_item(
     item: MediaItem,
 ) -> str:
@@ -784,28 +990,62 @@ async def _download_url_item(
     )
 
     output_template = str(
-        TEMP_ROOT / f"{safe_id}.%(ext)s"
+        TEMP_ROOT
+        / f"{safe_id}.%(ext)s"
     )
 
-    ydl_opts = {
-        "outtmpl": output_template,
-        "format": (
-            "bestvideo[height<=720]+"
-            "bestaudio/"
-            "best[height<=720]/"
-            "best"
-        ),
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "restrictfilenames": True,
-    }
+    # ---------------------------------------------
+    # AUDIO ONLY
+    # ---------------------------------------------
+
+    if item.audio_only:
+
+        ydl_opts = {
+            "outtmpl": output_template,
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "restrictfilenames": True,
+
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+        }
+
+    # ---------------------------------------------
+    # VIDEO + AUDIO
+    # ---------------------------------------------
+
+    else:
+
+        ydl_opts = {
+            "outtmpl": output_template,
+
+            "format": (
+                "bestvideo[height<=720]+"
+                "bestaudio/"
+                "best[height<=720]/"
+                "best"
+            ),
+
+            "merge_output_format": "mp4",
+
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "restrictfilenames": True,
+        }
 
     def download():
         with yt_dlp.YoutubeDL(
             ydl_opts
         ) as ydl:
+
             info = ydl.extract_info(
                 item.url,
                 download=True,
@@ -825,14 +1065,15 @@ async def _download_url_item(
             title = (
                 info.get("title")
                 or item.title
-                or "Video"
+                or "Media"
             )
 
             item.title = title
 
     log.info(
-        "MEDIA URL DOWNLOAD: %s",
+        "MEDIA URL DOWNLOAD: %s audio_only=%s",
         item.url,
+        item.audio_only,
     )
 
     await asyncio.wait_for(
@@ -865,6 +1106,39 @@ async def _download_url_item(
             "yt-dlp downloaded no playable file."
         )
 
+    if item.audio_only:
+        preferred = [
+            p
+            for p in candidates
+            if p.suffix.lower()
+            in {
+                ".mp3",
+                ".m4a",
+                ".aac",
+                ".opus",
+                ".ogg",
+            }
+        ]
+
+        if preferred:
+            candidates = preferred
+
+    else:
+        preferred = [
+            p
+            for p in candidates
+            if p.suffix.lower()
+            in {
+                ".mp4",
+                ".mkv",
+                ".webm",
+                ".mov",
+            }
+        ]
+
+        if preferred:
+            candidates = preferred
+
     path = str(
         candidates[0]
     )
@@ -877,9 +1151,14 @@ async def _download_url_item(
     return path
 
 
+# =========================================================
+# TELEGRAM DOWNLOAD
+# =========================================================
+
 async def _download_item(
     item: MediaItem,
 ) -> str:
+
     if item.url:
         return await _download_url_item(
             item
@@ -915,8 +1194,9 @@ async def _download_item(
 
     prefix = (
         f"fixmyenglish_"
-        f"{item.chat_id}"
-        f"{item.message_id}"
+        f"{item.chat_id}_"
+        f"{item.message_id}_"
+        f"{random.randint(100000, 999999)}"
     )
 
     path = await asyncio.wait_for(
@@ -941,6 +1221,307 @@ async def _download_item(
 
     return str(path)
 
+
+# =========================================================
+# FFMPEG HELPERS
+# =========================================================
+
+async def _run_ffmpeg(
+    command: list[str],
+    timeout: int,
+):
+    process = (
+        await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    )
+
+    stdout, stderr = (
+        await asyncio.wait_for(
+            process.communicate(),
+            timeout,
+        )
+    )
+
+    if process.returncode != 0:
+        error = stderr.decode(
+            errors="ignore"
+        )
+
+        raise RuntimeError(
+            error[-4000:]
+            or "FFmpeg failed."
+        )
+
+    return stdout, stderr
+
+
+async def _normalize_video(
+    source_path: str,
+) -> str:
+    """
+    Convert video into a predictable format:
+
+    MP4
+    H.264
+    AAC
+    yuv420p
+
+    This avoids many Telegram/PyTgCalls codec
+    compatibility problems.
+    """
+
+    source = Path(
+        source_path
+    )
+
+    if not source.exists():
+        raise FileNotFoundError(
+            source_path
+        )
+
+    output = (
+        TEMP_ROOT
+        / (
+            f"normalized_"
+            f"{source.stem}_"
+            f"{random.randint(100000, 999999)}"
+            f".mp4"
+        )
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+
+        "-i",
+        str(source),
+
+        "-map",
+        "0:v:0",
+
+        "-map",
+        "0:a:0?",
+
+        "-c:v",
+        "libx264",
+
+        "-preset",
+        "veryfast",
+
+        "-crf",
+        "23",
+
+        "-pix_fmt",
+        "yuv420p",
+
+        "-c:a",
+        "aac",
+
+        "-b:a",
+        "128k",
+
+        "-movflags",
+        "+faststart",
+
+        str(output),
+    ]
+
+    log.info(
+        "MEDIA VIDEO NORMALIZE: %s -> %s",
+        source,
+        output,
+    )
+
+    await _run_ffmpeg(
+        command,
+        VIDEO_NORMALIZE_TIMEOUT,
+    )
+
+    if not output.exists():
+        raise RuntimeError(
+            "Video normalization produced no file."
+        )
+
+    log.info(
+        "MEDIA VIDEO NORMALIZE OK: %s",
+        output,
+    )
+
+    return str(output)
+
+
+async def _extract_audio(
+    source_path: str,
+) -> str:
+    """
+    Convert a Telegram video into MP3 when
+    /audio is requested.
+
+    YouTube /audio is already downloaded directly
+    as MP3, so this is mainly for Telegram videos.
+    """
+
+    source = Path(
+        source_path
+    )
+
+    if not source.exists():
+        raise FileNotFoundError(
+            source_path
+        )
+
+    output = (
+        TEMP_ROOT
+        / (
+            f"audio_"
+            f"{source.stem}_"
+            f"{random.randint(100000, 999999)}"
+            f".mp3"
+        )
+    )
+
+    command = [
+        "ffmpeg",
+        "-y",
+
+        "-i",
+        str(source),
+
+        "-vn",
+
+        "-c:a",
+        "libmp3lame",
+
+        "-b:a",
+        "192k",
+
+        str(output),
+    ]
+
+    log.info(
+        "MEDIA AUDIO EXTRACT: %s -> %s",
+        source,
+        output,
+    )
+
+    await _run_ffmpeg(
+        command,
+        AUDIO_EXTRACT_TIMEOUT,
+    )
+
+    if not output.exists():
+        raise RuntimeError(
+            "Audio extraction produced no file."
+        )
+
+    return str(output)
+
+
+async def _prepare_playable_path(
+    item: MediaItem,
+    source_path: str,
+) -> str:
+    """
+    Prepare the actual file that PyTgCalls will use.
+
+    Video:
+        MP4/H264/AAC
+
+    Audio:
+        original audio
+
+    Telegram video used with /audio:
+        MP3
+    """
+
+    # ---------------------------------------------
+    # VIDEO MODE
+    # ---------------------------------------------
+
+    if (
+        item.kind == "video"
+        and not item.audio_only
+    ):
+
+        # Already normalized.
+        if (
+            item.temp_path
+            and item.temp_path != item.source_path
+            and Path(
+                item.temp_path
+            ).exists()
+        ):
+            return item.temp_path
+
+        normalized = (
+            await _normalize_video(
+                source_path
+            )
+        )
+
+        item.temp_path = normalized
+
+        return normalized
+
+    # ---------------------------------------------
+    # AUDIO ONLY
+    # ---------------------------------------------
+
+    if (
+        item.kind == "video"
+        and item.audio_only
+    ):
+
+        if (
+            item.temp_path
+            and item.temp_path != item.source_path
+            and Path(
+                item.temp_path
+            ).exists()
+        ):
+            return item.temp_path
+
+        # If the downloaded source is already an
+        # audio file (YouTube /audio), use it.
+        suffix = Path(
+            source_path
+        ).suffix.lower()
+
+        if suffix in {
+            ".mp3",
+            ".m4a",
+            ".aac",
+            ".opus",
+            ".ogg",
+            ".wav",
+        }:
+            item.temp_path = source_path
+
+            return source_path
+
+        extracted = (
+            await _extract_audio(
+                source_path
+            )
+        )
+
+        item.temp_path = extracted
+
+        return extracted
+
+    # ---------------------------------------------
+    # NORMAL AUDIO / TTS
+    # ---------------------------------------------
+
+    return source_path
+
+
+# =========================================================
+# CLEANUP
+# =========================================================
 
 async def _cleanup_path(
     path: Optional[str],
@@ -970,14 +1551,24 @@ async def _cleanup_item(
     paths = set()
 
     if item.temp_path:
-        paths.add(item.temp_path)
+        paths.add(
+            item.temp_path
+        )
 
     if item.source_path:
-        paths.add(item.source_path)
+        paths.add(
+            item.source_path
+        )
 
     for path in paths:
-        await _cleanup_path(path)
+        await _cleanup_path(
+            path
+        )
 
+
+# =========================================================
+# NOW PLAYING
+# =========================================================
 
 async def _send_now_playing(
     chat_id: int,
@@ -1001,10 +1592,20 @@ async def _send_now_playing(
         else "Audio"
     )
 
+    repeat_info = ""
+
+    if item.repeat_count > 1:
+        repeat_info = (
+            f"\n"
+            f"• 🔁 Remaining plays: "
+            f"{item.repeat_count}"
+        )
+
     text = (
         f"{icon} <b>Now Playing</b>\n\n"
         f"• {item.title}\n"
         f"• {media_type}"
+        f"{repeat_info}"
     )
 
     await _send_status_message(
@@ -1014,6 +1615,10 @@ async def _send_now_playing(
         thread_id=item.thread_id,
     )
 
+
+# =========================================================
+# START CURRENT
+# =========================================================
 
 async def _start_current(
     chat_id: int,
@@ -1030,43 +1635,87 @@ async def _start_current(
         return False
 
     s.starting = True
+
     item = s.current
 
     try:
         log.info(
-            "MEDIA START: chat=%s title=%r kind=%s url=%s",
+            "MEDIA START: chat=%s title=%r kind=%s "
+            "audio_only=%s url=%s repeat=%s",
             chat_id,
             item.title,
             item.kind,
+            item.audio_only,
             bool(item.url),
+            item.repeat_count,
         )
 
         await _ensure_engine()
 
+        # -----------------------------------------
+        # Get original/downloaded source
+        # -----------------------------------------
+
+        if (
+            item.source_path
+            and Path(
+                item.source_path
+            ).exists()
+        ):
+            source_path = (
+                item.source_path
+            )
+
+        elif (
+            item.temp_path
+            and Path(
+                item.temp_path
+            ).exists()
+        ):
+            source_path = (
+                item.temp_path
+            )
+
+        else:
+            source_path = (
+                await _download_item(
+                    item
+                )
+            )
+
+            item.source_path = (
+                source_path
+            )
+
+        # -----------------------------------------
+        # Prepare playable file
+        # -----------------------------------------
+
         if (
             item.temp_path
+            and item.temp_path != item.source_path
             and Path(
                 item.temp_path
             ).exists()
         ):
             path = item.temp_path
 
-        elif (
-            item.source_path
-            and Path(
-                item.source_path
-            ).exists()
-        ):
-            path = item.source_path
-            item.temp_path = path
-
         else:
-            path = await _download_item(
-                item
+            path = (
+                await _prepare_playable_path(
+                    item,
+                    source_path,
+                )
             )
 
-            item.source_path = path
-            item.temp_path = path
+        if not Path(path).exists():
+            raise FileNotFoundError(
+                path
+            )
+
+        # -----------------------------------------
+        # Build stream
+        # -----------------------------------------
 
         stream = _build_stream(
             item,
@@ -1093,6 +1742,13 @@ async def _start_current(
         s.paused = False
         s.starting = False
 
+        # Ignore any delayed stream_end event
+        # generated by the previous stream.
+        s.ignore_end_until = (
+            asyncio.get_running_loop()
+            .time() + 2.5
+        )
+
         await _send_now_playing(
             chat_id,
             item,
@@ -1117,21 +1773,23 @@ async def _start_current(
             exc,
         )
 
-        await _safe_leave(
-            chat_id
-        )
-
         s.starting = False
 
         failed = s.current
         s.current = None
+
+        await _delete_status_messages(
+            chat_id
+        )
 
         if failed:
             await _cleanup_item(
                 failed
             )
 
-        await _delete_status_messages(
+        # Try to leave only after the failed
+        # stream operation.
+        await _safe_leave(
             chat_id
         )
 
@@ -1143,6 +1801,10 @@ async def _start_current(
         return False
 
 
+# =========================================================
+# ITEM IDENTITY
+# =========================================================
+
 def _item_key(
     item: Optional[MediaItem],
 ) -> Optional[str]:
@@ -1150,7 +1812,11 @@ def _item_key(
         return None
 
     if item.url:
-        return f"url:{item.url}"
+        return (
+            f"url:"
+            f"{item.url}:"
+            f"{item.audio_only}"
+        )
 
     if item.tts_text:
         return (
@@ -1167,30 +1833,72 @@ def _item_key(
     )
 
 
+def _same_item(
+    first: MediaItem,
+    second: MediaItem,
+) -> bool:
+    return (
+        _item_key(first)
+        == _item_key(second)
+    )
+
+
+# =========================================================
+# STREAM END
+# =========================================================
+
 async def _handle_stream_end(
     chat_id: int,
 ):
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
-        now = (
+        loop = (
             asyncio.get_running_loop()
-            .time()
         )
+
+        now = loop.time()
+
+        # -----------------------------------------
+        # Ignore intentional stop/skip/seek.
+        # -----------------------------------------
 
         if (
             s.suppress_end_until
             > now
         ):
             log.info(
-                "MEDIA END ignored: expected stop/skip chat=%s",
+                "MEDIA END ignored: suppressed "
+                "chat=%s",
                 chat_id,
             )
             return
 
+        # -----------------------------------------
+        # Ignore delayed event from the previous
+        # stream immediately after CALLS.play().
+        # -----------------------------------------
+
+        if (
+            s.ignore_end_until
+            > now
+        ):
+            log.info(
+                "MEDIA END ignored: delayed "
+                "event chat=%s",
+                chat_id,
+            )
+            return
+
+        # -----------------------------------------
+        # Already handling another end.
+        # -----------------------------------------
+
         if s.ending:
             log.info(
-                "MEDIA END ignored: already processing chat=%s",
+                "MEDIA END ignored: already processing "
+                "chat=%s",
                 chat_id,
             )
             return
@@ -1204,114 +1912,160 @@ async def _handle_stream_end(
             finished
         )
 
+        # -----------------------------------------
+        # Duplicate stream_end protection.
+        #
+        # A legitimate repeat is allowed because it
+        # will normally happen after much more than
+        # 2 seconds.
+        # -----------------------------------------
+
         if (
             s.last_finished_key
             == finished_key
-            and s.repeat != "one"
+            and (
+                now
+                - s.last_finished_at
+            ) < 2.0
         ):
             log.info(
-                "MEDIA END ignored: duplicate event chat=%s key=%s",
+                "MEDIA END ignored: duplicate event "
+                "chat=%s key=%s",
                 chat_id,
                 finished_key,
             )
             return
 
         s.ending = True
-        s.last_finished_key = finished_key
+
+        s.last_finished_key = (
+            finished_key
+        )
+
+        s.last_finished_at = now
 
         try:
-            # Delete the player's status messages
-            # after the item has finished.
+
             await _delete_status_messages(
                 chat_id
             )
 
-            if s.repeat == "one":
-                # Keep the source file so repeat-one
-                # can intentionally play it again.
-                s.current = MediaItem(
-                    chat_id=finished.chat_id,
-                    message_id=finished.message_id,
-                    title=finished.title,
-                    kind=finished.kind,
-                    requester_id=finished.requester_id,
-                    source_path=finished.source_path,
-                    temp_path=finished.temp_path,
-                    thread_id=finished.thread_id,
-                    audio_only=finished.audio_only,
-                    tts_text=finished.tts_text,
-                    url=finished.url,
+            # =====================================
+            # MANUAL FINITE REPEAT
+            # =====================================
+
+            if finished.repeat_count > 1:
+
+                # One play has just finished.
+                finished.repeat_count -= 1
+
+                s.current = finished
+                s.paused = False
+                s.starting = False
+
+                # Reuse the already prepared file.
+                # DO NOT delete it here.
+                await asyncio.sleep(
+                    0.25
                 )
 
-            else:
-                await _cleanup_item(
-                    finished
-                )
-
-                if (
-                    s.repeat == "all"
-                    and finished
-                ):
-                    # Re-add the same source to
-                    # the end of the queue.
-                    finished.temp_path = None
-
-                    s.queue.append(
-                        MediaItem(
-                            chat_id=finished.chat_id,
-                            message_id=finished.message_id,
-                            title=finished.title,
-                            kind=finished.kind,
-                            requester_id=finished.requester_id,
-                            source_path=finished.source_path,
-                            thread_id=finished.thread_id,
-                            audio_only=finished.audio_only,
-                            tts_text=finished.tts_text,
-                            url=finished.url,
-                        )
+                started = (
+                    await _start_current(
+                        chat_id
                     )
-
-                s.current = None
-
-            s.paused = False
-            s.starting = False
-
-            if s.queue or s.current:
-                # Small guard against duplicate stream_end
-                # events generated by the previous stream.
-                s.suppress_end_until = (
-                    asyncio.get_running_loop()
-                    .time() + 1.5
-                )
-
-                await asyncio.sleep(0.3)
-
-                s.suppress_end_until = 0.0
-
-                started = await _start_current(
-                    chat_id
                 )
 
                 if not started:
-                    await _safe_leave(
-                        chat_id
+                    s.current = None
+
+                    await _cleanup_item(
+                        finished
                     )
 
-            else:
-                log.info(
-                    "MEDIA END: queue empty; leaving chat=%s",
-                    chat_id,
+                    if s.queue:
+                        await _start_current(
+                            chat_id
+                        )
+                    else:
+                        await _safe_leave(
+                            chat_id
+                        )
+
+                return
+
+            # =====================================
+            # CURRENT ITEM FINISHED COMPLETELY
+            # =====================================
+
+            await _cleanup_item(
+                finished
+            )
+
+            s.current = None
+            s.paused = False
+            s.starting = False
+
+            # =====================================
+            # NEXT QUEUED ITEM
+            # =====================================
+
+            if s.queue:
+
+                # Ignore any duplicate delayed event
+                # from the previous stream.
+                s.ignore_end_until = (
+                    loop.time() + 2.5
                 )
 
-                s.current = None
-
-                await _safe_leave(
-                    chat_id
+                await asyncio.sleep(
+                    0.25
                 )
+
+                started = (
+                    await _start_current(
+                        chat_id
+                    )
+                )
+
+                if not started:
+                    s.current = None
+
+                    if not s.queue:
+                        await _safe_leave(
+                            chat_id
+                        )
+
+                return
+
+            # =====================================
+            # EVERYTHING FINISHED
+            # =====================================
+
+            s.current = None
+
+            log.info(
+                "MEDIA END: queue empty; "
+                "leaving chat=%s",
+                chat_id,
+            )
+
+            await _safe_leave(
+                chat_id
+            )
+
+        except Exception:
+            log.exception(
+                "MEDIA END HANDLER FAILED chat=%s",
+                chat_id,
+            )
 
         finally:
             s.ending = False
 
+
+# =========================================================
+# SEEK
+# =========================================================
 
 async def _seek_current(
     chat_id: int,
@@ -1334,6 +2088,8 @@ async def _seek_current(
     item = s.current
 
     try:
+        await _ensure_engine()
+
         current_time = CALLS.time(
             chat_id
         )
@@ -1349,6 +2105,7 @@ async def _seek_current(
             current_time = float(
                 current_time
             )
+
         except Exception:
             return (
                 False,
@@ -1360,27 +2117,30 @@ async def _seek_current(
             int(current_time) + seconds,
         )
 
-        if (
-            seconds < 0
-            and target == 0
-        ):
-            target = 0
+        # -----------------------------------------
+        # Use the already playable file whenever
+        # possible.
+        # -----------------------------------------
 
         if (
-            item.source_path
-            and Path(
-                item.source_path
-            ).exists()
-        ):
-            source_path = item.source_path
-
-        elif (
             item.temp_path
             and Path(
                 item.temp_path
             ).exists()
         ):
-            source_path = item.temp_path
+            source_path = (
+                item.temp_path
+            )
+
+        elif (
+            item.source_path
+            and Path(
+                item.source_path
+            ).exists()
+        ):
+            source_path = (
+                item.source_path
+            )
 
         else:
             source_path = (
@@ -1392,6 +2152,21 @@ async def _seek_current(
             item.source_path = (
                 source_path
             )
+
+            source_path = (
+                await _prepare_playable_path(
+                    item,
+                    source_path,
+                )
+            )
+
+            item.temp_path = (
+                source_path
+            )
+
+        # -----------------------------------------
+        # Duration
+        # -----------------------------------------
 
         duration_check = None
 
@@ -1434,6 +2209,10 @@ async def _seek_current(
                 "ℹ️ وصلت إلى نهاية الملف.",
             )
 
+        # -----------------------------------------
+        # Output file
+        # -----------------------------------------
+
         if (
             item.kind == "video"
             and not item.audio_only
@@ -1461,11 +2240,17 @@ async def _seek_current(
                 )
             )
 
+        # -----------------------------------------
+        # FFmpeg
+        # -----------------------------------------
+
         command = [
             "ffmpeg",
             "-y",
+
             "-ss",
             str(target),
+
             "-i",
             source_path,
         ]
@@ -1474,53 +2259,62 @@ async def _seek_current(
             item.kind == "video"
             and not item.audio_only
         ):
+
             command += [
                 "-map",
-                "0:v?",
+                "0:v:0",
+
                 "-map",
-                "0:a?",
+                "0:a:0?",
+
                 "-c:v",
                 "libx264",
+
                 "-preset",
                 "veryfast",
+
+                "-crf",
+                "23",
+
+                "-pix_fmt",
+                "yuv420p",
+
                 "-c:a",
                 "aac",
+
+                "-b:a",
+                "128k",
+
                 "-movflags",
                 "+faststart",
+
                 str(seek_path),
             ]
 
         else:
+
             command += [
                 "-vn",
+
                 "-c:a",
                 "libmp3lame",
+
                 "-q:a",
                 "4",
+
                 str(seek_path),
             ]
 
-        process = (
-            await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        )
-
-        _, stderr = (
-            await asyncio.wait_for(
-                process.communicate(),
+        try:
+            await _run_ffmpeg(
+                command,
                 120,
             )
-        )
 
-        if process.returncode != 0:
+        except Exception as exc:
             log.error(
-                "MEDIA SEEK FAILED: %s",
-                stderr.decode(
-                    errors="ignore"
-                )[-2000:],
+                "MEDIA SEEK FAILED: %r",
+                exc,
             )
 
             await _cleanup_path(
@@ -1532,19 +2326,25 @@ async def _seek_current(
                 "❌ تعذر تحريك التشغيل.",
             )
 
-        old_temp = item.temp_path
+        old_temp = (
+            item.temp_path
+        )
+
+        # -----------------------------------------
+        # Intentional stream replacement
+        # -----------------------------------------
 
         await _delete_status_messages(
             chat_id
         )
 
-        await _safe_leave(
-            chat_id
-        )
-
         s.suppress_end_until = (
             asyncio.get_running_loop()
-            .time() + 5
+            .time() + 6
+        )
+
+        await _safe_leave(
+            chat_id
         )
 
         item.temp_path = str(
@@ -1567,6 +2367,8 @@ async def _seek_current(
                 PLAY_TIMEOUT,
             )
 
+        # The old temporary file is no longer
+        # required.
         if (
             old_temp
             and old_temp != item.source_path
@@ -1576,11 +2378,16 @@ async def _seek_current(
                 old_temp
             )
 
+        s.suppress_end_until = (
+            asyncio.get_running_loop()
+            .time() + 2.5
+        )
+
         s.paused = False
 
         await _send_now_playing(
             chat_id,
-            item
+            item,
         )
 
         log.info(
@@ -1607,6 +2414,10 @@ async def _seek_current(
         )
 
 
+# =========================================================
+# ENQUEUE
+# =========================================================
+
 async def _enqueue(
     update: Update,
     context,
@@ -1618,7 +2429,9 @@ async def _enqueue(
     if not message or not user:
         return
 
-    source = _source_message(update)
+    source = _source_message(
+        update
+    )
 
     if source is None:
         await message.reply_text(
@@ -1626,17 +2439,21 @@ async def _enqueue(
         )
         return
 
-    # -------------------------------------------------
+    play_count = _extract_play_count(
+        update,
+        context,
+    )
+
+    # =====================================================
     # URL FIRST
-    #
-    # This MUST be checked before TTS.
-    # Otherwise a video URL would be treated as text.
-    # -------------------------------------------------
+    # =====================================================
+
     url = _extract_url(
         source
     )
 
     if url:
+
         thread_id = (
             getattr(
                 message,
@@ -1653,7 +2470,7 @@ async def _enqueue(
         item = MediaItem(
             chat_id=message.chat.id,
             message_id=source.message_id,
-            title="Video",
+            title="YouTube",
             kind="video",
             requester_id=user.id,
             thread_id=thread_id,
@@ -1661,13 +2478,13 @@ async def _enqueue(
                 mode == "audio"
             ),
             url=url,
+            repeat_count=play_count,
         )
 
-    # -------------------------------------------------
+    # =====================================================
     # TEXT -> TTS
-    #
-    # Only when there is NO URL.
-    # -------------------------------------------------
+    # =====================================================
+
     elif (
         mode == "auto"
         and getattr(
@@ -1676,6 +2493,7 @@ async def _enqueue(
             None,
         )
     ):
+
         text = source.text.strip()
 
         if not text:
@@ -1714,9 +2532,15 @@ async def _enqueue(
             thread_id=thread_id,
             audio_only=True,
             tts_text=text,
+            repeat_count=play_count,
         )
 
+    # =====================================================
+    # TELEGRAM MEDIA
+    # =====================================================
+
     else:
+
         media = _media_from_message(
             source
         )
@@ -1734,7 +2558,7 @@ async def _enqueue(
             and kind != "video"
         ):
             await message.reply_text(
-                "❌ /video يجب أن يكون ردًا على فيديو."
+                "❌ /video يجب أن يكون ردًا على فيديو أو رابط YouTube."
             )
             return
 
@@ -1746,10 +2570,6 @@ async def _enqueue(
                 "❌ /audio هنا مخصص لتشغيل الفيديو كصوت فقط."
             )
             return
-
-        audio_only = (
-            mode == "audio"
-        )
 
         thread_id = (
             getattr(
@@ -1771,62 +2591,74 @@ async def _enqueue(
             kind=kind,
             requester_id=user.id,
             thread_id=thread_id,
-            audio_only=audio_only,
+            audio_only=(
+                mode == "audio"
+            ),
+            repeat_count=play_count,
         )
 
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
+
+        # =================================================
+        # SAME ITEM ALREADY PLAYING/QUEUED
+        #
+        # Do NOT reject it.
+        #
+        # Add the requested number of plays instead.
+        # =================================================
+
+        existing = None
+
+        if s.current and _same_item(
+            s.current,
+            item,
+        ):
+            existing = s.current
+
+        else:
+            for queued in s.queue:
+                if _same_item(
+                    queued,
+                    item,
+                ):
+                    existing = queued
+                    break
+
+        if existing:
+
+            existing.repeat_count = min(
+                MAX_REPEAT_COUNT,
+                existing.repeat_count
+                + play_count,
+            )
+
+            location = (
+                "التشغيل الحالي"
+                if existing is s.current
+                else "قائمة الانتظار"
+            )
+
+            await message.reply_text(
+                f"🔁 تمت إضافة "
+                f"{play_count} تشغيل"
+                f" إلى {location}.\n"
+                f"📌 الإجمالي الآن: "
+                f"{existing.repeat_count}"
+            )
+
+            return
+
+        # =================================================
+        # QUEUE LIMIT
+        # =================================================
 
         if len(s.queue) >= MAX_QUEUE:
             await message.reply_text(
                 f"❌ Queue is full. Maximum: {MAX_QUEUE}."
-            )
-            return
-
-        all_items = list(
-            s.queue
-        )
-
-        if s.current:
-            all_items.insert(
-                0,
-                s.current,
-            )
-
-        # Prevent exact duplicates.
-        if item.url:
-            duplicate = any(
-                x.url == item.url
-                and x.audio_only
-                == item.audio_only
-                for x in all_items
-                if x.url
-            )
-
-        elif item.tts_text:
-            duplicate = any(
-                x.tts_text
-                == item.tts_text
-                for x in all_items
-                if x.tts_text
-            )
-
-        else:
-            duplicate = any(
-                x.message_id
-                == item.message_id
-                and x.audio_only
-                == item.audio_only
-                and not x.tts_text
-                and not x.url
-                for x in all_items
-            )
-
-        if duplicate:
-            await message.reply_text(
-                "ℹ️ هذا الملف أو النص موجود بالفعل في المشغل."
             )
             return
 
@@ -1835,7 +2667,12 @@ async def _enqueue(
             and not s.starting
         )
 
+        # =================================================
+        # START IMMEDIATELY
+        # =================================================
+
         if idle:
+
             s.current = item
 
             await _send_status_message(
@@ -1843,6 +2680,12 @@ async def _enqueue(
                 text=(
                     f"▶️ Starting: "
                     f"<b>{item.title}</b>"
+                    + (
+                        f"\n🔁 Plays: "
+                        f"{item.repeat_count}"
+                        if item.repeat_count > 1
+                        else ""
+                    )
                 ),
                 thread_id=item.thread_id,
             )
@@ -1852,6 +2695,7 @@ async def _enqueue(
             )
 
             if not started:
+
                 await _delete_status_messages(
                     chat_id
                 )
@@ -1863,7 +2707,13 @@ async def _enqueue(
 
             return
 
-        s.queue.append(item)
+        # =================================================
+        # ADD TO QUEUE
+        # =================================================
+
+        s.queue.append(
+            item
+        )
 
         await _send_status_message(
             chat_id=chat_id,
@@ -1871,10 +2721,20 @@ async def _enqueue(
                 f"➕ Added to queue:\n"
                 f"<b>{item.title}</b>\n"
                 f"📍 Position: {len(s.queue)}"
+                + (
+                    f"\n🔁 Plays: "
+                    f"{item.repeat_count}"
+                    if item.repeat_count > 1
+                    else ""
+                )
             ),
             thread_id=item.thread_id,
         )
 
+
+# =========================================================
+# PLAY COMMANDS
+# =========================================================
 
 async def play_handler(
     update,
@@ -1909,6 +2769,10 @@ async def video_handler(
     )
 
 
+# =========================================================
+# PAUSE
+# =========================================================
+
 async def pause_handler(
     update,
     context,
@@ -1927,6 +2791,7 @@ async def pause_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
         if not s.current:
@@ -1936,6 +2801,8 @@ async def pause_handler(
             return
 
         try:
+            await _ensure_engine()
+
             result = CALLS.pause(
                 chat_id
             )
@@ -1962,6 +2829,10 @@ async def pause_handler(
             )
 
 
+# =========================================================
+# RESUME
+# =========================================================
+
 async def resume_handler(
     update,
     context,
@@ -1980,6 +2851,7 @@ async def resume_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
         if not s.current:
@@ -1989,6 +2861,8 @@ async def resume_handler(
             return
 
         try:
+            await _ensure_engine()
+
             result = CALLS.resume(
                 chat_id
             )
@@ -2015,6 +2889,10 @@ async def resume_handler(
             )
 
 
+# =========================================================
+# SKIP
+# =========================================================
+
 async def skip_handler(
     update,
     context,
@@ -2033,6 +2911,7 @@ async def skip_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
         if not s.current:
@@ -2045,7 +2924,12 @@ async def skip_handler(
 
         s.suppress_end_until = (
             asyncio.get_running_loop()
-            .time() + 4
+            .time() + 6
+        )
+
+        s.ignore_end_until = (
+            asyncio.get_running_loop()
+            .time() + 6
         )
 
         await _delete_status_messages(
@@ -2066,8 +2950,11 @@ async def skip_handler(
         s.ending = False
 
         if s.queue:
-            started = await _start_current(
-                chat_id
+
+            started = (
+                await _start_current(
+                    chat_id
+                )
             )
 
             if started:
@@ -2080,6 +2967,10 @@ async def skip_handler(
             "⏭ Skipped. Queue is empty."
         )
 
+
+# =========================================================
+# STOP
+# =========================================================
 
 async def stop_handler(
     update,
@@ -2099,11 +2990,20 @@ async def stop_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
-        s.suppress_end_until = (
+        now = (
             asyncio.get_running_loop()
-            .time() + 5
+            .time()
+        )
+
+        s.suppress_end_until = (
+            now + 8
+        )
+
+        s.ignore_end_until = (
+            now + 8
         )
 
         await _delete_status_messages(
@@ -2125,16 +3025,23 @@ async def stop_handler(
             )
 
         s.queue.clear()
+
         s.current = None
         s.paused = False
         s.starting = False
         s.ending = False
+
         s.last_finished_key = None
+        s.last_finished_at = 0.0
 
         await message.reply_text(
             "⏹ Playback stopped and queue cleared."
         )
 
+
+# =========================================================
+# LEAVE
+# =========================================================
 
 async def leave_handler(
     update,
@@ -2145,6 +3052,10 @@ async def leave_handler(
         context,
     )
 
+
+# =========================================================
+# QUEUE
+# =========================================================
 
 async def queue_handler(
     update,
@@ -2163,6 +3074,10 @@ async def queue_handler(
         )
     )
 
+
+# =========================================================
+# NOW PLAYING
+# =========================================================
 
 async def now_handler(
     update,
@@ -2192,10 +3107,15 @@ async def now_handler(
     await message.reply_text(
         f"🎵 {status}\n\n"
         f"• {s.current.title}\n"
-        f"• Repeat: {s.repeat}\n"
+        f"• 🔁 Plays remaining: "
+        f"{s.current.repeat_count}\n"
         f"• Queue: {len(s.queue)}"
     )
 
+
+# =========================================================
+# CLEAR
+# =========================================================
 
 async def clear_handler(
     update,
@@ -2215,6 +3135,7 @@ async def clear_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
         count = len(s.queue)
@@ -2230,6 +3151,10 @@ async def clear_handler(
             f"🧹 Cleared {count} queued item(s)."
         )
 
+
+# =========================================================
+# SHUFFLE
+# =========================================================
 
 async def shuffle_handler(
     update,
@@ -2249,6 +3174,7 @@ async def shuffle_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
         if len(s.queue) < 2:
@@ -2274,7 +3200,11 @@ async def shuffle_handler(
         )
 
 
-async def repeat_handler(
+# =========================================================
+# MANUAL REPEAT BUTTON
+# =========================================================
+
+async def repeat_add_handler(
     update,
     context,
 ):
@@ -2291,34 +3221,42 @@ async def repeat_handler(
 
     chat_id = message.chat.id
 
-    args = [
-        x.lower()
-        for x in (
-            context.args or []
-        )
-    ]
-
     async with _lock(chat_id):
+
         s = _state(chat_id)
 
-        if args and args[0] in {
-            "off",
-            "one",
-            "all",
-        }:
-            s.repeat = args[0]
+        if not s.current:
+            await message.reply_text(
+                "ℹ️ لا يوجد مقطع حالي."
+            )
+            return
 
-        else:
-            s.repeat = {
-                "off": "one",
-                "one": "all",
-                "all": "off",
-            }[s.repeat]
+        if (
+            s.current.repeat_count
+            >= MAX_REPEAT_COUNT
+        ):
+            await message.reply_text(
+                f"❌ وصلت إلى الحد الأقصى "
+                f"({MAX_REPEAT_COUNT})."
+            )
+            return
 
-        await message.reply_text(
-            f"🔁 Repeat: {s.repeat}"
+        s.current.repeat_count += 1
+
+        remaining = (
+            s.current.repeat_count
         )
 
+        await message.reply_text(
+            f"🔁 تمت إضافة تشغيل واحد.\n"
+            f"📌 إجمالي مرات التشغيل المتبقية: "
+            f"{remaining}"
+        )
+
+
+# =========================================================
+# SEEK HANDLER
+# =========================================================
 
 async def _seek_handler(
     update,
@@ -2339,6 +3277,7 @@ async def _seek_handler(
     chat_id = message.chat.id
 
     async with _lock(chat_id):
+
         success, text = (
             await _seek_current(
                 chat_id,
@@ -2372,6 +3311,10 @@ async def forward10_handler(
         10,
     )
 
+
+# =========================================================
+# CALLBACKS
+# =========================================================
 
 async def _callback_handler(
     update,
@@ -2413,7 +3356,12 @@ async def _callback_handler(
 
     action = parts[2]
 
+    # ---------------------------------------------
+    # HIDE
+    # ---------------------------------------------
+
     if action == "hide":
+
         try:
             await query.edit_message_reply_markup(
                 reply_markup=None
@@ -2423,6 +3371,23 @@ async def _callback_handler(
 
         return
 
+    # ---------------------------------------------
+    # REPEAT +1
+    # ---------------------------------------------
+
+    if action == "repeat_add":
+
+        await repeat_add_handler(
+            update,
+            context,
+        )
+
+        return
+
+    # ---------------------------------------------
+    # NORMAL BUTTONS
+    # ---------------------------------------------
+
     handlers = {
         "back10": back10_handler,
         "forward10": forward10_handler,
@@ -2431,7 +3396,6 @@ async def _callback_handler(
         "skip": skip_handler,
         "stop": stop_handler,
         "queue": queue_handler,
-        "repeat": repeat_handler,
     }
 
     handler = handlers.get(
@@ -2444,6 +3408,10 @@ async def _callback_handler(
             context,
         )
 
+
+# =========================================================
+# SHUTDOWN
+# =========================================================
 
 async def shutdown_media_player():
     global USER_CLIENT
@@ -2459,8 +3427,11 @@ async def shutdown_media_player():
     for chat_id in list(
         PLAYERS
     ):
+
         try:
+
             async with _lock(chat_id):
+
                 s = PLAYERS[chat_id]
 
                 await _delete_status_messages(
@@ -2492,7 +3463,9 @@ async def shutdown_media_player():
     CHAT_LOCKS.clear()
 
     if CALLS:
+
         try:
+
             result = CALLS.stop()
 
             if inspect.isawaitable(
@@ -2505,13 +3478,16 @@ async def shutdown_media_player():
 
         except Exception:
             log.exception(
-                "MEDIA SHUTDOWN: PyTgCalls stop failed."
+                "MEDIA SHUTDOWN: "
+                "PyTgCalls stop failed."
             )
 
     CALLS = None
 
     if USER_CLIENT:
+
         try:
+
             if (
                 getattr(
                     USER_CLIENT,
@@ -2524,6 +3500,7 @@ async def shutdown_media_player():
                     False,
                 )
             ):
+
                 await asyncio.wait_for(
                     USER_CLIENT.stop(),
                     20,
@@ -2531,10 +3508,12 @@ async def shutdown_media_player():
 
         except Exception:
             log.exception(
-                "MEDIA SHUTDOWN: assistant stop failed."
+                "MEDIA SHUTDOWN: "
+                "assistant stop failed."
             )
 
     USER_CLIENT = None
+
     ENGINE_READY = False
     EVENTS_REGISTERED = False
     BOT_INSTANCE = None
@@ -2550,12 +3529,20 @@ async def _post_shutdown(
     await shutdown_media_player()
 
 
+# =========================================================
+# REGISTER HANDLERS
+# =========================================================
+
 def register_media_play(
     application: Application,
 ):
     global BOT_INSTANCE
 
     BOT_INSTANCE = application.bot
+
+    # ---------------------------------------------
+    # ENGLISH COMMANDS
+    # ---------------------------------------------
 
     application.add_handler(
         CommandHandler(
@@ -2641,12 +3628,14 @@ def register_media_play(
         )
     )
 
-    application.add_handler(
-        CommandHandler(
-            "repeat",
-            repeat_handler,
-        )
-    )
+    # NOTE:
+    # /repeat has intentionally been removed.
+    # Repeating is now only done through the
+    # 🔁 كرر button or "شغل 3".
+
+    # ---------------------------------------------
+    # CALLBACKS
+    # ---------------------------------------------
 
     application.add_handler(
         CallbackQueryHandler(
@@ -2655,11 +3644,16 @@ def register_media_play(
         )
     )
 
+    # ---------------------------------------------
+    # ARABIC / TEXT COMMANDS
+    # ---------------------------------------------
+
     application.add_handler(
         MessageHandler(
             filters.TEXT
             & filters.Regex(
-                r"^(?:شغل|play)$"
+                r"^(?:شغل|play)"
+                r"(?:\s+[0-9٠-٩۰-۹]+)?$"
             ),
             play_handler,
         )
@@ -2669,7 +3663,8 @@ def register_media_play(
         MessageHandler(
             filters.TEXT
             & filters.Regex(
-                r"^(?:شغل صوت|شغل صوتي|play audio)$"
+                r"^(?:شغل صوت|شغل صوتي|play audio)"
+                r"(?:\s+[0-9٠-٩۰-۹]+)?$"
             ),
             audio_handler,
         )
@@ -2679,7 +3674,8 @@ def register_media_play(
         MessageHandler(
             filters.TEXT
             & filters.Regex(
-                r"^(?:شغل فيديو|play video|فيديو|video)$"
+                r"^(?:شغل فيديو|play video|فيديو|video)"
+                r"(?:\s+[0-9٠-٩۰-۹]+)?$"
             ),
             video_handler,
         )
@@ -2691,4 +3687,4 @@ def register_media_play(
 
     log.info(
         "MEDIA PLAY: handlers registered."
-)
+    )
