@@ -111,13 +111,7 @@ class PlayerState:
     paused: bool = False
     starting: bool = False
     suppress_end_until: float = 0.0
-    ignore_end_until: float = 0.0
-    repeat: str = "off"  # off / one / all
-    status_message_ids: set[int] = None
-
-    def __post_init__(self):
-        if self.status_message_ids is None:
-            self.status_message_ids = set()
+    repeat: str = "off" # off / one / all
 
 
 def _state(chat_id: int) -> PlayerState:
@@ -200,10 +194,6 @@ async def _require_admin(update, context) -> bool:
 def _buttons(chat_id: int):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⏪ -10", callback_data=f"mp:{chat_id}:back10"),
-            InlineKeyboardButton("⏩ +10", callback_data=f"mp:{chat_id}:forward10"),
-        ],
-        [
             InlineKeyboardButton("⏸ Pause", callback_data=f"mp:{chat_id}:pause"),
             InlineKeyboardButton("▶️ Resume", callback_data=f"mp:{chat_id}:resume"),
         ],
@@ -237,45 +227,6 @@ def _format_queue(s: PlayerState) -> str:
             lines.append(f"{i}. {icon} {item.title}")
 
     return "\n".join(lines) if lines else "📋 Queue is empty."
-
-
-async def _delete_status_messages(chat_id: int):
-    if BOT_INSTANCE is None:
-        return
-    s = _state(chat_id)
-    message_ids = list(s.status_message_ids)
-    if not message_ids:
-        return
-    s.status_message_ids.clear()
-    for message_id in message_ids:
-        try:
-            await BOT_INSTANCE.delete_message(chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-
-
-async def _send_status_message(chat_id: int, text: str, reply_markup=None, thread_id: Optional[int] = None):
-    if BOT_INSTANCE is None:
-        return None
-    await _delete_status_messages(chat_id)
-    kwargs = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-    }
-    if reply_markup is not None:
-        kwargs["reply_markup"] = reply_markup
-    if thread_id:
-        kwargs["message_thread_id"] = thread_id
-
-    try:
-        sent = await BOT_INSTANCE.send_message(**kwargs)
-        _state(chat_id).status_message_ids.add(sent.message_id)
-        return sent
-    except Exception as exc:
-        if "Topic_closed" not in repr(exc):
-            log.exception("MEDIA: status message failed.")
-        return None
 
 
 async def _ensure_engine():
@@ -486,6 +437,9 @@ async def _cleanup_path(path: Optional[str]):
 
 
 async def _send_now_playing(chat_id: int, item: MediaItem):
+    if BOT_INSTANCE is None:
+        return
+
     icon = (
         "🎬"
         if item.kind == "video" and not item.audio_only
@@ -498,12 +452,28 @@ async def _send_now_playing(chat_id: int, item: MediaItem):
         f"• {'Video' if item.kind == 'video' and not item.audio_only else 'Audio'}"
     )
 
-    await _send_status_message(
-        chat_id=chat_id,
-        text=text,
-        reply_markup=_buttons(chat_id),
-        thread_id=item.thread_id,
-    )
+    kwargs = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": _buttons(chat_id),
+    }
+
+    if item.thread_id:
+        kwargs["message_thread_id"] = item.thread_id
+
+    try:
+        await BOT_INSTANCE.send_message(**kwargs)
+
+    except Exception as exc:
+        if "Topic_closed" in repr(exc):
+            log.info(
+                "MEDIA: topic closed; status message skipped."
+            )
+        else:
+            log.exception(
+                "MEDIA: now-playing message failed."
+            )
 
 
 async def _start_current(chat_id: int) -> bool:
@@ -546,7 +516,7 @@ async def _start_current(chat_id: int) -> bool:
                     await _cleanup_path(failed.temp_path if failed else None)
                     if BOT_INSTANCE:
                         try:
-                            await BOT_INSTANCE.send_message(chat_id=chat_id, text=f"❌ فشل تحميل المقطع وتم تخطيه: {item.title}")
+                            await BOT_INSTANCE.send_message(chat_id=chat_id, text=f"❌ فشل التحميل وتم تخطي المقطع: {item.title}")
                         except Exception:
                             pass
                     if s.queue:
@@ -578,7 +548,6 @@ async def _start_current(chat_id: int) -> bool:
 
         s.paused = False
         s.starting = False
-        s.ignore_end_until = asyncio.get_running_loop().time() + 2.5
 
         await _send_now_playing(
             chat_id,
@@ -605,6 +574,7 @@ async def _start_current(chat_id: int) -> bool:
         )
 
         await _safe_leave(chat_id)
+
         s.starting = False
 
         failed = s.current
@@ -626,18 +596,17 @@ async def _start_current(chat_id: int) -> bool:
 async def _handle_stream_end(chat_id: int):
     async with _lock(chat_id):
         s = _state(chat_id)
-        loop = asyncio.get_running_loop()
-        now = loop.time()
 
-        if s.suppress_end_until > now or s.ignore_end_until > now:
+        now = asyncio.get_running_loop().time()
+
+        if s.suppress_end_until > now:
             log.info(
-                "MEDIA END ignored: expected stop/skip/seek chat=%s",
+                "MEDIA END ignored: expected stop/skip chat=%s",
                 chat_id,
             )
             return
 
         finished = s.current
-        await _delete_status_messages(chat_id)
 
         if finished:
             await _cleanup_path(
@@ -666,8 +635,6 @@ async def _handle_stream_end(chat_id: int):
         s.starting = False
 
         if s.queue or s.current:
-            s.ignore_end_until = loop.time() + 2.5
-            await asyncio.sleep(0.25)
             await _start_current(chat_id)
         else:
             log.info(
@@ -675,66 +642,6 @@ async def _handle_stream_end(chat_id: int):
                 chat_id,
             )
             await _safe_leave(chat_id)
-
-
-# SEEK FUNCTIONALITY
-async def _seek_current(chat_id: int, seconds: int):
-    s = _state(chat_id)
-    if not s.current:
-        return False, "ℹ️ لا يوجد تشغيل."
-    if s.paused:
-        return False, "ℹ️ أوقف الإيقاف المؤقت أولًا."
-
-    item = s.current
-    try:
-        await _ensure_engine()
-        current_time = CALLS.time(chat_id)
-        if inspect.isawaitable(current_time):
-            current_time = await current_time
-
-        try:
-            current_time = float(current_time)
-        except Exception:
-            current_time = 0.0
-
-        target = max(0, int(current_time) + seconds)
-        source_path = item.temp_path if (item.temp_path and Path(item.temp_path).exists()) else await _download_item(item)
-        item.temp_path = source_path
-
-        seek_ext = "mp4" if (item.kind == "video" and not item.audio_only) else "mp3"
-        seek_path = TEMP_ROOT / f"seek_{chat_id}_{item.message_id}_{random.randint(100000, 999999)}.{seek_ext}"
-
-        command = ["ffmpeg", "-y", "-ss", str(target), "-i", source_path]
-        if seek_ext == "mp4":
-            command += ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(seek_path)]
-        else:
-            command += ["-vn", "-c:a", "libmp3lame", "-q:a", "4", str(seek_path)]
-
-        proc = await asyncio.create_subprocess_exec(*command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        await asyncio.wait_for(proc.communicate(), 120)
-
-        old_temp = item.temp_path
-        await _delete_status_messages(chat_id)
-
-        s.suppress_end_until = asyncio.get_running_loop().time() + 8
-        s.ignore_end_until = asyncio.get_running_loop().time() + 8
-
-        item.temp_path = str(seek_path)
-        stream = _build_stream(item, str(seek_path))
-
-        result = CALLS.play(chat_id, stream)
-        if inspect.isawaitable(result):
-            await asyncio.wait_for(result, PLAY_TIMEOUT)
-
-        if old_temp and old_temp != str(seek_path):
-            await _cleanup_path(old_temp)
-
-        s.paused = False
-        await _send_now_playing(chat_id, item)
-        return True, f"⏱ تم الانتقال إلى {target} ثانية."
-    except Exception as exc:
-        log.exception("MEDIA SEEK FAILED: %r", exc)
-        return False, "❌ تعذر تغيير موضع التشغيل."
 
 
 async def _enqueue(update: Update, context, mode="auto"):
@@ -816,10 +723,10 @@ async def _enqueue(update: Update, context, mode="auto"):
 
         if idle:
             s.current = item
-            await _send_status_message(
-                chat_id=chat_id,
-                text=f"▶️ Starting: <b>{title}</b>",
-                thread_id=thread_id,
+
+            await message.reply_text(
+                f"▶️ Starting: <b>{title}</b>",
+                parse_mode="HTML",
             )
 
             started = await _start_current(
@@ -827,7 +734,6 @@ async def _enqueue(update: Update, context, mode="auto"):
             )
 
             if not started:
-                await _delete_status_messages(chat_id)
                 await message.reply_text(
                     "❌ تعذر تشغيل الوسائط. "
                     "راجع Railway Logs التي تبدأ بـ MEDIA."
@@ -836,23 +742,37 @@ async def _enqueue(update: Update, context, mode="auto"):
             return
 
         s.queue.append(item)
-        await _send_status_message(
-            chat_id=chat_id,
-            text=f"➕ Added to queue:\n<b>{title}</b>\n📍 Position: {len(s.queue)}",
-            thread_id=thread_id,
+
+        await message.reply_text(
+            f"➕ Added to queue:\n"
+            f"<b>{title}</b>\n"
+            f"📍 Position: {len(s.queue)}",
+            parse_mode="HTML",
         )
 
 
 async def play_handler(update, context):
-    await _enqueue(update, context, "auto")
+    await _enqueue(
+        update,
+        context,
+        "auto",
+    )
 
 
 async def audio_handler(update, context):
-    await _enqueue(update, context, "audio")
+    await _enqueue(
+        update,
+        context,
+        "audio",
+    )
 
 
 async def video_handler(update, context):
-    await _enqueue(update, context, "video")
+    await _enqueue(
+        update,
+        context,
+        "video",
+    )
 
 
 async def pause_handler(update, context):
@@ -864,7 +784,6 @@ async def pause_handler(update, context):
         return
 
     chat_id = message.chat.id
-    await _delete_status_messages(chat_id)
 
     async with _lock(chat_id):
         s = _state(chat_id)
@@ -884,6 +803,7 @@ async def pause_handler(update, context):
                 )
 
             s.paused = True
+
             await message.reply_text(
                 "⏸ Paused."
             )
@@ -906,7 +826,6 @@ async def resume_handler(update, context):
         return
 
     chat_id = message.chat.id
-    await _delete_status_messages(chat_id)
 
     async with _lock(chat_id):
         s = _state(chat_id)
@@ -926,6 +845,7 @@ async def resume_handler(update, context):
                 )
 
             s.paused = False
+
             await message.reply_text(
                 "▶️ Resumed."
             )
@@ -948,7 +868,6 @@ async def skip_handler(update, context):
         return
 
     chat_id = message.chat.id
-    await _delete_status_messages(chat_id)
 
     async with _lock(chat_id):
         s = _state(chat_id)
@@ -960,11 +879,13 @@ async def skip_handler(update, context):
             return
 
         old = s.current
+
         s.suppress_end_until = (
             asyncio.get_running_loop().time() + 4
         )
 
         await _safe_leave(chat_id)
+
         await _cleanup_path(
             old.temp_path
         )
@@ -998,7 +919,6 @@ async def stop_handler(update, context):
         return
 
     chat_id = message.chat.id
-    await _delete_status_messages(chat_id)
 
     async with _lock(chat_id):
         s = _state(chat_id)
@@ -1030,11 +950,17 @@ async def stop_handler(update, context):
 
 
 async def leave_handler(update, context):
-    await stop_handler(update, context)
+    await stop_handler(
+        update,
+        context,
+    )
 
 
 async def finish_handler(update, context):
-    await stop_handler(update, context)
+    await stop_handler(
+        update,
+        context,
+    )
 
 
 async def queue_handler(update, context):
@@ -1088,6 +1014,7 @@ async def clear_handler(update, context):
 
     async with _lock(chat_id):
         s = _state(chat_id)
+
         count = len(s.queue)
 
         for item in s.queue:
@@ -1096,6 +1023,7 @@ async def clear_handler(update, context):
             )
 
         s.queue.clear()
+
         await message.reply_text(
             f"🧹 Cleared {count} queued item(s)."
         )
@@ -1116,7 +1044,7 @@ async def shuffle_handler(update, context):
 
         if len(s.queue) < 2:
             await message.reply_text(
-                "ℹ️ Not enough items."
+                "ℹ️️ Not enough items."
             )
             return
 
@@ -1164,27 +1092,6 @@ async def repeat_handler(update, context):
         )
 
 
-async def _seek_handler(update, context, seconds: int):
-    if not await _require_admin(update, context):
-        return
-    message = update.effective_message
-    if not message:
-        return
-    chat_id = message.chat.id
-    await _delete_status_messages(chat_id)
-    async with _lock(chat_id):
-        _, text = await _seek_current(chat_id, seconds)
-        await message.reply_text(text)
-
-
-async def back10_handler(update, context):
-    await _seek_handler(update, context, -10)
-
-
-async def forward10_handler(update, context):
-    await _seek_handler(update, context, 10)
-
-
 async def _callback_handler(update, context):
     query = update.callback_query
 
@@ -1223,8 +1130,6 @@ async def _callback_handler(update, context):
         return
 
     handlers = {
-        "back10": back10_handler,
-        "forward10": forward10_handler,
         "pause": pause_handler,
         "resume": resume_handler,
         "skip": skip_handler,
@@ -1255,7 +1160,6 @@ async def shutdown_media_player():
         try:
             async with _lock(chat_id):
                 s = PLAYERS[chat_id]
-                await _delete_status_messages(chat_id)
 
                 if CALLS:
                     await _safe_leave(chat_id)
@@ -1384,7 +1288,6 @@ def register_media_play(application: Application):
         )
     )
 
-    # Plain commands/messages.
     application.add_handler(
         MessageHandler(
             filters.TEXT
