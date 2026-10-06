@@ -523,7 +523,7 @@ async def _delete_status_messages(chat_id: int):
                 log.debug("MEDIA: could not delete status message %s: %r", message_id, exc)
 
 
-async def _send_status(chat_id: int, text: str, thread_id: Optional[int] = None, markup=None):
+async def _send_status(chat_id: int, text: str, thread_id: Optional[int] = None, markup=None, track: bool = True):
     if BOT_INSTANCE is None:
         return None
 
@@ -539,7 +539,8 @@ async def _send_status(chat_id: int, text: str, thread_id: Optional[int] = None,
 
     try:
         msg = await BOT_INSTANCE.send_message(**kwargs)
-        _state(chat_id).status_messages.add(msg.message_id)
+        if track:
+            _state(chat_id).status_messages.add(msg.message_id)
         return msg
     except Exception as exc:
         if "Topic_closed" in repr(exc):
@@ -699,7 +700,7 @@ async def _seek_handler(update, context, delta: int):
         ok, text = await _restart_current_at(chat_id, target)
 
         if ok:
-            await _send_status(chat_id, text, s.current.thread_id if s.current else None)
+            await _send_status(chat_id, text, s.current.thread_id if s.current else None, track=False)
         else:
             await message.reply_text(text)
 
@@ -1206,6 +1207,7 @@ def register_media_play(application: Application):
     application.add_handler(CommandHandler("stop", stop_handler))
     application.add_handler(CommandHandler("leave", leave_handler))
     application.add_handler(CommandHandler("انهاء", leave_handler))
+    application.add_handler(CommandHandler("إنهاء", leave_handler))
     application.add_handler(CommandHandler("queue", queue_handler))
     application.add_handler(CommandHandler("now", now_handler))
     application.add_handler(CommandHandler("clear", clear_handler))
@@ -1242,5 +1244,14 @@ def register_media_play(application: Application):
         )
     )
 
-    application.post_shutdown = _post_shutdown
+    existing_post_shutdown = getattr(application, "post_shutdown", None)
+
+    async def _combined_post_shutdown(app):
+        if existing_post_shutdown:
+            result = existing_post_shutdown(app)
+            if inspect.isawaitable(result):
+                await result
+        await _post_shutdown(app)
+
+    application.post_shutdown = _combined_post_shutdown
     log.info("MEDIA PLAY: handlers registered.")
