@@ -1044,7 +1044,7 @@ async def shuffle_handler(update, context):
 
         if len(s.queue) < 2:
             await message.reply_text(
-                "ℹ️️ Not enough items."
+                "ℹ️ Not enough items."
             )
             return
 
@@ -1260,12 +1260,6 @@ def register_media_play(application: Application):
         CommandHandler("finish", finish_handler)
     )
     application.add_handler(
-        CommandHandler("إنهاء", finish_handler)
-    )
-    application.add_handler(
-        CommandHandler("انهاء", finish_handler)
-    )
-    application.add_handler(
         CommandHandler("queue", queue_handler)
     )
     application.add_handler(
@@ -1315,6 +1309,17 @@ def register_media_play(application: Application):
                 r"^(?:شغل فيديو|play video|فيديو|video)$"
             ),
             video_handler,
+        )
+    )
+
+    # دعم أوامر الإنهاء بالعربية والإنجليزية بدون أخطاء
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & filters.Regex(
+                r"^(?:/إنهاء|/انهاء|إنهاء|انهاء)$"
+            ),
+            finish_handler,
         )
     )
 
