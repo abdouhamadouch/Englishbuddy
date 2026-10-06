@@ -158,7 +158,7 @@ class MediaItem:
     url: Optional[str] = None  
 
     repeat_count: int = 1
-    fail_count: int = 0  # لمنع تكرار التحميل الفاشل بلا نهاية
+    fail_count: int = 0
 
 @dataclass
 class PlayerState:
@@ -488,7 +488,6 @@ async def _send_status_message(
     if BOT_INSTANCE is None:
         return None
 
-    # حذف رسائل الحالة القديمة قبل إرسال الجديدة
     await _delete_status_messages(chat_id)
 
     kwargs = {  
@@ -1197,19 +1196,30 @@ async def forward10_handler(update, context): await _seek_handler(update, contex
 
 async def _callback_handler(update, context):
     query = update.callback_query
-    if not query: return  
-    try: await query.answer() except Exception: pass  
+    if not query: 
+        return  
+    try: 
+        await query.answer() 
+    except Exception: 
+        pass  
 
     parts = (query.data or "").split(":")  
-    if len(parts) != 3 or parts[0] != "mp": return  
+    if len(parts) != 3 or parts[0] != "mp": 
+        return  
 
     if not await _is_admin(update, context):  
-        try: await query.answer("Admins only.", show_alert=True) except Exception: pass  
+        try: 
+            await query.answer("Admins only.", show_alert=True) 
+        except Exception: 
+            pass  
         return  
 
     action = parts[2]  
     if action == "hide":  
-        try: await query.edit_message_reply_markup(reply_markup=None) except Exception: pass  
+        try: 
+            await query.edit_message_reply_markup(reply_markup=None) 
+        except Exception: 
+            pass  
         return  
     if action == "repeat_add":  
         await repeat_add_handler(update, context)  
@@ -1225,7 +1235,8 @@ async def _callback_handler(update, context):
         "queue": queue_handler,  
     }  
     handler = handlers.get(action)  
-    if handler: await handler(update, context)
+    if handler: 
+        await handler(update, context)
 
 # =========================================================
 # SHUTDOWN & REGISTER
