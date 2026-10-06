@@ -1,5 +1,5 @@
 """
-FixMyEnglish Media Player (Full Version)
+FixMyEnglish Media Player (Full Integration)
 Audio + Video Voice Chat player with YouTube, full commands & auto-cleanup support.
 
 Uses:
@@ -109,7 +109,7 @@ class PlayerState:
     paused: bool = False
     starting: bool = False
     suppress_end_until: float = 0.0
-    repeat: str = "off"  # off / one / all
+    repeat: str = "off"
 
 
 def _state(chat_id: int) -> PlayerState:
@@ -165,7 +165,6 @@ async def _is_admin(update: Update, context) -> bool:
         member = await context.bot.get_chat_member(message.chat.id, user.id)
         return member.status in ADMIN_STATUSES
     except Exception:
-        log.exception("Admin check failed.")
         return False
 
 
@@ -462,12 +461,6 @@ async def _enqueue(update: Update, context, mode="auto"):
         return
 
     kind, title = media
-    if mode == "video" and kind not in ("video", "youtube"):
-        await message.reply_text("❌ /video يجب أن يكون ردًا على فيديو أو رابط يوتيوب.")
-        return
-    if mode == "audio" and kind == "video":
-        pass  # allowed as audio-only conversion
-
     audio_only = (mode == "audio")
     thread_id = getattr(message, "message_thread_id", None) or getattr(source, "message_thread_id", None)
 
@@ -729,4 +722,4 @@ def register_media_play(application: Application):
     application.add_handler(CallbackQueryHandler(_callback_handler, pattern=r"^mp:"))
 
     application.post_shutdown = _post_shutdown
-    log.info("MEDIA PLAY: full handlers registered with auto-delete & YouTube support.")
+    log.info("MEDIA PLAY: full handlers registered successfully.")
