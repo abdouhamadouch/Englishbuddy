@@ -61,7 +61,7 @@ MAX_SESSION_COUNT = 500
 # Gemini fallback (same env keys as media_transcribe)
 GEMINI_TIMEOUT = 25
 GEMINI_MAX_RETRIES = 1
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
 
 # ============================================================
