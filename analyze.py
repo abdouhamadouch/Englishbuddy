@@ -15,6 +15,11 @@
 # - Root belongs to Deep Analysis.
 # - Synonyms / Antonyms / Word Levels belong to Relations.
 #
+# AI backend:
+# - Primary: Groq via ask_groq_func injected from bot.py
+# - Fallback: Gemini (GEMINI_API_KEY / GEMINI_API_KEY_2 / GEMINI_API_KEY_3)
+#   with round-robin key rotation on timeout / quota / transient errors.
+#
 # Expected configure() interface:
 # configure(ask_groq_func, get_target_text_func, is_approved_func)
 
@@ -22,6 +27,8 @@ import asyncio
 import html
 import inspect
 import json
+import logging
+import os
 import re
 import time
 import uuid
@@ -30,6 +37,9 @@ from urllib.request import Request, urlopen
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
+
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -47,6 +57,11 @@ NO_INFO = "No reliable information was found for this section."
 
 MAX_SESSION_COUNT = 500
 
+# Gemini fallback (same env keys as media_transcribe)
+GEMINI_TIMEOUT = 25
+GEMINI_MAX_RETRIES = 1
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+
 
 # ============================================================
 # INJECTED FUNCTIONS FROM bot.py
@@ -57,6 +72,12 @@ _get_target_text = None
 _is_approved = None
 
 _sessions = {}
+
+# Gemini clients (lazy)
+_gemini_key_lock = asyncio.Lock()
+_gemini_key_cursor = 0
+_gemini_clients = []
+_gemini_clients_ready = False
 
 
 def configure(
@@ -489,13 +510,148 @@ async def _load_source_data(word):
 
 
 # ============================================================
-# GROQ
+# GEMINI FALLBACK
 # ============================================================
 
-async def _groq(prompt, max_tokens=500):
-    if not _ask_groq:
+def _load_gemini_keys():
+    keys = []
+    for name in ("GEMINI_API_KEY", "GEMINI_API_KEY_2", "GEMINI_API_KEY_3"):
+        value = (os.getenv(name) or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
+def _ensure_gemini_clients():
+    global _gemini_clients_ready, _gemini_clients
+    if _gemini_clients_ready:
+        return _gemini_clients
+
+    _gemini_clients_ready = True
+    keys = _load_gemini_keys()
+    if not keys:
+        logger.warning("analyze.py: no Gemini keys set; Groq-only mode")
+        return _gemini_clients
+
+    try:
+        from google import genai
+    except ImportError:
+        logger.warning("analyze.py: google-genai not installed; Groq-only mode")
+        return _gemini_clients
+
+    for index, key in enumerate(keys, start=1):
+        try:
+            _gemini_clients.append((f"key{index}", genai.Client(api_key=key)))
+        except Exception:
+            logger.exception("analyze.py: failed to build Gemini client key%s", index)
+
+    return _gemini_clients
+
+
+def _gemini_status_code(exc):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for attr in ("code", "status_code"):
+            value = getattr(current, attr, None)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        status = getattr(current, "status", None)
+        if isinstance(status, int):
+            return status
+        if isinstance(status, str) and status.isdigit():
+            return int(status)
+        response = getattr(current, "response", None)
+        if response is not None:
+            response_code = getattr(response, "status_code", None)
+            if isinstance(response_code, int):
+                return response_code
+        current = current.__cause__ or current.__context__
+    return None
+
+
+async def _ask_gemini(prompt, system_prompt, max_tokens=500):
+    """Round-robin Gemini call used only when Groq fails."""
+    from google.genai import types
+
+    clients = _ensure_gemini_clients()
+    if not clients:
         return ""
 
+    global _gemini_key_cursor
+
+    async with _gemini_key_lock:
+        start = _gemini_key_cursor % len(clients)
+        _gemini_key_cursor = (start + 1) % len(clients)
+
+    model = (os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.1,
+        max_output_tokens=max_tokens,
+    )
+
+    order = list(range(start, len(clients))) + list(range(0, start))
+    contents = [prompt]
+
+    for index in order:
+        label, client = clients[index]
+
+        for attempt in range(GEMINI_MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=GEMINI_TIMEOUT,
+                )
+                text = (getattr(response, "text", None) or "").strip()
+                if not text:
+                    raise RuntimeError("empty gemini response")
+                logger.info("analyze Gemini %s succeeded", label)
+                return text
+
+            except asyncio.TimeoutError:
+                logger.warning("analyze Gemini %s timeout, trying next key", label)
+                break
+
+            except Exception as exc:
+                code = _gemini_status_code(exc)
+                if code in {408, 429, 500, 502, 503, 504}:
+                    if attempt < GEMINI_MAX_RETRIES:
+                        await asyncio.sleep(0.7)
+                        continue
+                    logger.warning(
+                        "analyze Gemini %s unavailable (%s), trying next key",
+                        label,
+                        code,
+                    )
+                    break
+                logger.warning(
+                    "analyze Gemini %s failed (%s), trying next key",
+                    label,
+                    code,
+                )
+                break
+
+    return ""
+
+
+# ============================================================
+# AI (Groq primary → Gemini fallback)
+# ============================================================
+
+async def _ai(prompt, max_tokens=500):
+    """
+    Prefer Groq. If Groq is missing, empty, or fails → try Gemini.
+    """
     system_prompt = (
         "You are an accurate English-learning assistant. "
         "Use established English knowledge only. "
@@ -509,29 +665,46 @@ async def _groq(prompt, max_tokens=500):
         "Do not use Markdown tables."
     )
 
-    try:
-        result = _ask_groq(prompt, max_tokens=max_tokens, system_prompt=system_prompt)
-        if inspect.isawaitable(result):
-            result = await asyncio.wait_for(result, timeout=18)
+    # 1) Groq first
+    if _ask_groq:
+        try:
+            result = _ask_groq(
+                prompt,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+            )
+            if inspect.isawaitable(result):
+                result = await asyncio.wait_for(result, timeout=18)
 
-        if result is None:
-            return ""
-        result = str(result).strip()
-        if not result:
-            return ""
-        lowered = result.lower()
+            if result is not None:
+                result = str(result).strip()
+                lowered = result.lower()
+                bad_responses = {
+                    "empty ai response",
+                    "❌ empty ai response.",
+                    "error",
+                    "none",
+                    "null",
+                    "no response",
+                }
+                if result and lowered not in bad_responses:
+                    return _strip_markdown(result)
+        except asyncio.TimeoutError:
+            logger.warning("analyze Groq timeout → Gemini fallback")
+        except Exception:
+            logger.exception("analyze Groq failed → Gemini fallback")
 
-        bad_responses = {
-            "empty ai response", "❌ empty ai response.", "error", "none", "null", "no response"
-        }
-        if lowered in bad_responses:
-            return ""
+    # 2) Gemini fallback
+    gemini_text = await _ask_gemini(prompt, system_prompt, max_tokens=max_tokens)
+    if gemini_text:
+        return _strip_markdown(gemini_text)
 
-        return _strip_markdown(result)
-    except asyncio.TimeoutError:
-        return ""
-    except Exception:
-        return ""
+    return ""
+
+
+# Keep old name used throughout the module
+async def _groq(prompt, max_tokens=500):
+    return await _ai(prompt, max_tokens=max_tokens)
 
 
 async def _groq_json(prompt, max_tokens=700):
@@ -616,7 +789,8 @@ Keep explanations simple and practical. Do not invent information.
         pos_parts = []
         for m in first_meanings:
             p = m.get("part_of_speech", "").strip()
-            if p: pos_parts.append(p)
+            if p:
+                pos_parts.append(p)
         pos = ", ".join(_unique(pos_parts))
 
     if not meaning and dictionary.get("meanings"):
@@ -626,7 +800,8 @@ Keep explanations simple and practical. Do not invent information.
                 if d:
                     meaning = d
                     break
-            if meaning: break
+            if meaning:
+                break
 
     if not example and dictionary.get("meanings"):
         for m in dictionary["meanings"]:
@@ -635,7 +810,8 @@ Keep explanations simple and practical. Do not invent information.
                 if e:
                     example = e
                     break
-            if example: break
+            if example:
+                break
 
     # Final formatting ensuring beauty and structure
     if not arabic:
@@ -647,19 +823,19 @@ Keep explanations simple and practical. Do not invent information.
         f"🔎 <b>Analysis:</b> {_html(word)}",
         "━━━━━━━━━━━━━━━━━━"
     ]
-    
+
     if pos:
         lines.append(f"🏷 <b>Type:</b> {_html(pos.capitalize())}")
-        
+
     if arabic:
         lines.append(f"🇩🇿 <b>Arabic:</b> {_html(arabic)}")
-        
+
     if meaning:
         lines.append(f"📖 <b>Meaning:</b> {_html(meaning)}")
-        
+
     if example:
         lines.append(f"📝 <b>Example:</b> {_html(example)}")
-        
+
     lines.append("━━━━━━━━━━━━━━━━━━")
     lines.append("👇 <i>Choose an option below:</i>")
 
@@ -711,9 +887,11 @@ def _create_session(user_id, chat_id, word, data):
 
 
 def _get_session(session_id):
-    if not session_id: return None
+    if not session_id:
+        return None
     session = _sessions.get(session_id)
-    if not session: return None
+    if not session:
+        return None
 
     if _now() - session.get("created_at", 0) > SESSION_TTL:
         _sessions.pop(session_id, None)
@@ -758,6 +936,7 @@ def _meaning_keyboard(session_id):
         [InlineKeyboardButton("⬅️ Back", callback_data=_callback(session_id, "back"))],
     ])
 
+
 def _relations_keyboard(session_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔄 Synonyms", callback_data=_callback(session_id, "synonyms")),
@@ -769,6 +948,7 @@ def _relations_keyboard(session_id):
         [InlineKeyboardButton("⬅️ Back", callback_data=_callback(session_id, "back"))],
     ])
 
+
 def _deep_keyboard(session_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🌱 Root & Etymology", callback_data=_callback(session_id, "root")),
@@ -778,6 +958,7 @@ def _deep_keyboard(session_id):
         [InlineKeyboardButton("⬅️ Back", callback_data=_callback(session_id, "back"))],
     ])
 
+
 def _expressions_keyboard(session_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💬 Idioms", callback_data=_callback(session_id, "idioms")),
@@ -786,6 +967,7 @@ def _expressions_keyboard(session_id):
         [InlineKeyboardButton("⬅️ Back", callback_data=_callback(session_id, "back"))],
     ])
 
+
 def _slang_keyboard(session_id):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🗣️ Slang", callback_data=_callback(session_id, "slang_words")),
@@ -793,6 +975,7 @@ def _slang_keyboard(session_id):
         [InlineKeyboardButton("💬 Informal Uses", callback_data=_callback(session_id, "informal"))],
         [InlineKeyboardButton("⬅️ Back", callback_data=_callback(session_id, "back"))],
     ])
+
 
 def _pronunciation_keyboard(session_id):
     return InlineKeyboardMarkup([
@@ -810,7 +993,8 @@ def _pronunciation_keyboard(session_id):
 
 async def _arabic_glosses(word, words):
     words = _unique(words)[:15]
-    if not words: return {}
+    if not words:
+        return {}
 
     prompt = f"""
 For the English word "{word}", give a short Arabic meaning/gloss
@@ -836,7 +1020,8 @@ Return JSON only in this exact structure:
         items = data.get("items")
         if isinstance(items, list):
             for item in items:
-                if not isinstance(item, dict): continue
+                if not isinstance(item, dict):
+                    continue
                 en = str(item.get("word") or "").strip()
                 ar = str(item.get("arabic") or "").strip()
                 if en and ar:
@@ -948,7 +1133,8 @@ async def _meaning_result(word, data):
         lines.append(f"<b>{number}. {_html(pos)}</b>" if pos else f"<b>{number}.</b>")
         for definition in meaning.get("definitions", [])[:3]:
             text = definition.get("definition", "").strip()
-            if text: lines.append(f"• {_html(text)}")
+            if text:
+                lines.append(f"• {_html(text)}")
         number += 1
 
     if len(lines) <= 2:
@@ -962,13 +1148,16 @@ async def _meaning_result(word, data):
 
 async def _homophones_result(word, data):
     words = [x for x in _unique(data.get("sound_alikes", [])) if x.lower() != word.lower()][:15]
-    if not words: return f"<b>🔊 Homophones — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\nNo reliable homophones were found."
+    if not words:
+        return f"<b>🔊 Homophones — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\nNo reliable homophones were found."
     arabic = await _arabic_glosses(word, words)
     return f"<b>🔊 Homophones — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(_list_with_arabic(words, arabic)) + "\n\n📚 Source: Datamuse"
 
+
 async def _spelling_result(word, data):
     words = [x for x in _unique(data.get("similar_spelling", [])) if x.lower() != word.lower()][:15]
-    if not words: return f"<b>✍️ Similar Spelling — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\nNo reliable similar-spelling words were found."
+    if not words:
+        return f"<b>✍️ Similar Spelling — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\nNo reliable similar-spelling words were found."
     arabic = await _arabic_glosses(word, words)
     return f"<b>✍️ Similar Spelling — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(_list_with_arabic(words, arabic)) + "\n\n📚 Source: Datamuse"
 
@@ -994,20 +1183,24 @@ For the English word "{word}", identify its genuine English word family. Return 
 
     if isinstance(data_json, dict):
         for item in data_json.get("items", []) or []:
-            if not isinstance(item, dict): continue
+            if not isinstance(item, dict):
+                continue
             form = str(item.get("word") or "").strip()
             pos = str(item.get("part_of_speech") or "").strip()
             arabic = str(item.get("arabic") or "").strip()
             if form and (form.lower() != word.lower()):
                 items.append((form, pos, arabic))
 
-    if not items: return f"<b>🌳 Word Family — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n{_html(NO_INFO)}"
+    if not items:
+        return f"<b>🌳 Word Family — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n{_html(NO_INFO)}"
 
     lines = []
     for form, pos, arabic in items[:15]:
         line = f"• <b>{_html(form)}</b>"
-        if pos: line += f" — {_html(pos)}"
-        if arabic: line += f" — {_html(arabic)}"
+        if pos:
+            line += f" — {_html(pos)}"
+        if arabic:
+            line += f" — {_html(arabic)}"
         lines.append(line)
 
     return f"<b>🌳 Word Family — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines)
@@ -1033,8 +1226,10 @@ Estimate the CEFR level of the English word "{word}". Return JSON only:
         return f"<b>📊 Word Level — {_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\nNo reliable CEFR level was found."
 
     lines = [f"<b>📊 Word Level — {_html(word)}</b>", "━━━━━━━━━━━━━━━━━━", f"• <b>CEFR:</b> {_html(level)}"]
-    if result.get("confidence"): lines.append(f"• <b>Confidence:</b> {_html(result.get('confidence'))}")
-    if result.get("note"): lines.append(f"• {_html(result.get('note'))}")
+    if result.get("confidence"):
+        lines.append(f"• <b>Confidence:</b> {_html(result.get('confidence'))}")
+    if result.get("note"):
+        lines.append(f"• {_html(result.get('note'))}")
 
     return "\n".join(lines)
 
@@ -1048,7 +1243,13 @@ async def _pronunciation_result(word, data, variant="both"):
     phonetic = dictionary.get("phonetic", "").strip()
     texts = _unique([str(item.get("text") or "").strip() for item in dictionary.get("phonetics", []) if str(item.get("text") or "").strip()])
 
-    prompt_variant = "American English pronunciation" if variant == "us" else "British English pronunciation" if variant == "uk" else "American and British English pronunciation"
+    prompt_variant = (
+        "American English pronunciation"
+        if variant == "us"
+        else "British English pronunciation"
+        if variant == "uk"
+        else "American and British English pronunciation"
+    )
     prompt = f"""
 Give reliable pronunciation for "{word}" in {prompt_variant}. Return JSON only:
 {{ "us": "IPA or unknown", "uk": "IPA or unknown", "stress": "short stress description", "note": "short pronunciation note" }}
@@ -1062,17 +1263,24 @@ Give reliable pronunciation for "{word}" in {prompt_variant}. Return JSON only:
         stress = str(result.get("stress") or "").strip()
         note = str(result.get("note") or "").strip()
 
-        if variant in {"both", "us"} and us.lower() != "unknown" and us: lines.append(f"🇺🇸 <b>US:</b> {_html(us)}")
-        if variant in {"both", "uk"} and uk.lower() != "unknown" and uk: lines.append(f"🇬🇧 <b>UK:</b> {_html(uk)}")
-        if stress: lines.append(f"🎯 <b>Stress:</b> {_html(stress)}")
-        if note: lines.append(f"💡 {_html(note)}")
+        if variant in {"both", "us"} and us.lower() != "unknown" and us:
+            lines.append(f"🇺🇸 <b>US:</b> {_html(us)}")
+        if variant in {"both", "uk"} and uk.lower() != "unknown" and uk:
+            lines.append(f"🇬🇧 <b>UK:</b> {_html(uk)}")
+        if stress:
+            lines.append(f"🎯 <b>Stress:</b> {_html(stress)}")
+        if note:
+            lines.append(f"💡 {_html(note)}")
 
     if len(lines) == 2:
-        if phonetic: lines.append(f"• {_html(phonetic)}")
+        if phonetic:
+            lines.append(f"• {_html(phonetic)}")
         elif texts:
-            for text in texts[:2]: lines.append(f"• {_html(text)}")
+            for text in texts[:2]:
+                lines.append(f"• {_html(text)}")
 
-    if len(lines) == 2: lines.append(_html(NO_INFO))
+    if len(lines) == 2:
+        lines.append(_html(NO_INFO))
     return "\n".join(lines)
 
 
@@ -1080,21 +1288,148 @@ Give reliable pronunciation for "{word}" in {prompt_variant}. Return JSON only:
 # GENERIC FINAL SECTIONS
 # ============================================================
 
-async def _usage_result(word, data): return await _ai_section(word, "📝 Usage", "Explain how native speakers commonly use this word. Give 2–3 natural example sentences and include Arabic translations.", data, max_tokens=600)
-async def _collocations_result(word, data): return await _ai_section(word, "🔗 Collocations", "Give the most common natural collocations with this word. Group them briefly when useful. Give Arabic meanings.", data, max_tokens=600)
-async def _register_result(word, data): return await _ai_section(word, "🎚 Register", "Explain whether this word is neutral, formal, informal, or slang. Explain contexts and give Arabic clarification.", data, max_tokens=450)
-async def _root_result(word, data): return await _ai_section(word, "🌱 Root & Etymology", "Explain the reliable etymology/root. Include Arabic explanation.", data, max_tokens=550)
-async def _formation_result(word, data): return await _ai_section(word, "🧩 Word Formation", "Explain how this word is formed (prefix, suffix, root). Give Arabic explanation.", data, max_tokens=500)
-async def _semantic_result(word, data): return await _ai_section(word, "🧠 Semantic Analysis", "Explain semantic differences between main meanings. Give short examples and Arabic clarification.", data, max_tokens=650)
-async def _learner_notes_result(word, data): return await _ai_section(word, "⚠️ Learner Notes", "Give the most useful learner warnings (common mistakes, confusing words). Give Arabic clarification.", data, max_tokens=550)
-async def _idioms_result(word, data): return await _ai_section(word, "💬 Idioms", "List common English idioms containing this word. Give Arabic meanings and short examples.", data, max_tokens=600)
-async def _fixed_phrases_result(word, data): return await _ai_section(word, "🧱 Fixed Phrases", "Give common fixed phrases containing this word. Include Arabic meanings and examples.", data, max_tokens=600)
-async def _expression_collocations_result(word, data): return await _collocations_result(word, data)
-async def _slang_result(word, data): return await _ai_section(word, "🗣️ Slang", "Identify genuine slang meanings. Distinguish from informal. Give Arabic meanings.", data, max_tokens=550)
-async def _phrasal_result(word, data): return await _ai_section(word, "🔀 Phrasal Verbs", "List genuine common phrasal verbs formed with this word. Give Arabic translation and examples.", data, max_tokens=600)
-async def _informal_result(word, data): return await _ai_section(word, "💬 Informal Uses", "Explain genuine informal uses differing from neutral. Give Arabic meanings and examples.", data, max_tokens=550)
-async def _stress_result(word, data): return await _ai_section(word, "🎯 Stress", "Explain word stress. If it changes between noun/verb, explain. Give IPA only when reliable. Include Arabic explanation.", data, max_tokens=450)
-async def _pron_tips_result(word, data): return await _ai_section(word, "🗣️ Pronunciation Tips", "Give useful pronunciation tips (silent letters, connected speech). Include Arabic explanation.", data, max_tokens=500)
+async def _usage_result(word, data):
+    return await _ai_section(
+        word,
+        "📝 Usage",
+        "Explain how native speakers commonly use this word. Give 2–3 natural example sentences and include Arabic translations.",
+        data,
+        max_tokens=600,
+    )
+
+
+async def _collocations_result(word, data):
+    return await _ai_section(
+        word,
+        "🔗 Collocations",
+        "Give the most common natural collocations with this word. Group them briefly when useful. Give Arabic meanings.",
+        data,
+        max_tokens=600,
+    )
+
+
+async def _register_result(word, data):
+    return await _ai_section(
+        word,
+        "🎚 Register",
+        "Explain whether this word is neutral, formal, informal, or slang. Explain contexts and give Arabic clarification.",
+        data,
+        max_tokens=450,
+    )
+
+
+async def _root_result(word, data):
+    return await _ai_section(
+        word,
+        "🌱 Root & Etymology",
+        "Explain the reliable etymology/root. Include Arabic explanation.",
+        data,
+        max_tokens=550,
+    )
+
+
+async def _formation_result(word, data):
+    return await _ai_section(
+        word,
+        "🧩 Word Formation",
+        "Explain how this word is formed (prefix, suffix, root). Give Arabic explanation.",
+        data,
+        max_tokens=500,
+    )
+
+
+async def _semantic_result(word, data):
+    return await _ai_section(
+        word,
+        "🧠 Semantic Analysis",
+        "Explain semantic differences between main meanings. Give short examples and Arabic clarification.",
+        data,
+        max_tokens=650,
+    )
+
+
+async def _learner_notes_result(word, data):
+    return await _ai_section(
+        word,
+        "⚠️ Learner Notes",
+        "Give the most useful learner warnings (common mistakes, confusing words). Give Arabic clarification.",
+        data,
+        max_tokens=550,
+    )
+
+
+async def _idioms_result(word, data):
+    return await _ai_section(
+        word,
+        "💬 Idioms",
+        "List common English idioms containing this word. Give Arabic meanings and short examples.",
+        data,
+        max_tokens=600,
+    )
+
+
+async def _fixed_phrases_result(word, data):
+    return await _ai_section(
+        word,
+        "🧱 Fixed Phrases",
+        "Give common fixed phrases containing this word. Include Arabic meanings and examples.",
+        data,
+        max_tokens=600,
+    )
+
+
+async def _expression_collocations_result(word, data):
+    return await _collocations_result(word, data)
+
+
+async def _slang_result(word, data):
+    return await _ai_section(
+        word,
+        "🗣️ Slang",
+        "Identify genuine slang meanings. Distinguish from informal. Give Arabic meanings.",
+        data,
+        max_tokens=550,
+    )
+
+
+async def _phrasal_result(word, data):
+    return await _ai_section(
+        word,
+        "🔀 Phrasal Verbs",
+        "List genuine common phrasal verbs formed with this word. Give Arabic translation and examples.",
+        data,
+        max_tokens=600,
+    )
+
+
+async def _informal_result(word, data):
+    return await _ai_section(
+        word,
+        "💬 Informal Uses",
+        "Explain genuine informal uses differing from neutral. Give Arabic meanings and examples.",
+        data,
+        max_tokens=550,
+    )
+
+
+async def _stress_result(word, data):
+    return await _ai_section(
+        word,
+        "🎯 Stress",
+        "Explain word stress. If it changes between noun/verb, explain. Give IPA only when reliable. Include Arabic explanation.",
+        data,
+        max_tokens=450,
+    )
+
+
+async def _pron_tips_result(word, data):
+    return await _ai_section(
+        word,
+        "🗣️ Pronunciation Tips",
+        "Give useful pronunciation tips (silent letters, connected speech). Include Arabic explanation.",
+        data,
+        max_tokens=500,
+    )
 
 
 # ============================================================
@@ -1102,30 +1437,54 @@ async def _pron_tips_result(word, data): return await _ai_section(word, "🗣️
 # ============================================================
 
 async def _final_result(action, word, data):
-    if action == "meaning_meanings": return await _meaning_result(word, data)
-    if action == "meaning_usage": return await _usage_result(word, data)
-    if action == "meaning_collocations": return await _collocations_result(word, data)
-    if action == "meaning_register": return await _register_result(word, data)
-    if action == "synonyms": return await _synonyms_result(word, data)
-    if action == "antonyms": return await _antonyms_result(word, data)
-    if action == "homophones": return await _homophones_result(word, data)
-    if action == "spelling": return await _spelling_result(word, data)
-    if action == "family": return await _family_result(word, data)
-    if action == "levels": return await _levels_result(word, data)
-    if action == "root": return await _root_result(word, data)
-    if action == "formation": return await _formation_result(word, data)
-    if action == "semantic": return await _semantic_result(word, data)
-    if action == "learner_notes": return await _learner_notes_result(word, data)
-    if action == "idioms": return await _idioms_result(word, data)
-    if action == "fixed_phrases": return await _fixed_phrases_result(word, data)
-    if action == "expression_collocations": return await _expression_collocations_result(word, data)
-    if action == "slang_words": return await _slang_result(word, data)
-    if action == "phrasal": return await _phrasal_result(word, data)
-    if action == "informal": return await _informal_result(word, data)
-    if action == "pron_us": return await _pronunciation_result(word, data, "us")
-    if action == "pron_uk": return await _pronunciation_result(word, data, "uk")
-    if action == "stress": return await _stress_result(word, data)
-    if action == "pron_tips": return await _pron_tips_result(word, data)
+    if action == "meaning_meanings":
+        return await _meaning_result(word, data)
+    if action == "meaning_usage":
+        return await _usage_result(word, data)
+    if action == "meaning_collocations":
+        return await _collocations_result(word, data)
+    if action == "meaning_register":
+        return await _register_result(word, data)
+    if action == "synonyms":
+        return await _synonyms_result(word, data)
+    if action == "antonyms":
+        return await _antonyms_result(word, data)
+    if action == "homophones":
+        return await _homophones_result(word, data)
+    if action == "spelling":
+        return await _spelling_result(word, data)
+    if action == "family":
+        return await _family_result(word, data)
+    if action == "levels":
+        return await _levels_result(word, data)
+    if action == "root":
+        return await _root_result(word, data)
+    if action == "formation":
+        return await _formation_result(word, data)
+    if action == "semantic":
+        return await _semantic_result(word, data)
+    if action == "learner_notes":
+        return await _learner_notes_result(word, data)
+    if action == "idioms":
+        return await _idioms_result(word, data)
+    if action == "fixed_phrases":
+        return await _fixed_phrases_result(word, data)
+    if action == "expression_collocations":
+        return await _expression_collocations_result(word, data)
+    if action == "slang_words":
+        return await _slang_result(word, data)
+    if action == "phrasal":
+        return await _phrasal_result(word, data)
+    if action == "informal":
+        return await _informal_result(word, data)
+    if action == "pron_us":
+        return await _pronunciation_result(word, data, "us")
+    if action == "pron_uk":
+        return await _pronunciation_result(word, data, "uk")
+    if action == "stress":
+        return await _stress_result(word, data)
+    if action == "pron_tips":
+        return await _pron_tips_result(word, data)
 
     return f"<b>{_html(word)}</b>\n━━━━━━━━━━━━━━━━━━\n{_html(NO_INFO)}"
 
@@ -1141,13 +1500,17 @@ async def analysis_command(update, context):
     word = await _get_word_from_update(update, context)
 
     if not word:
-        await update.effective_message.reply_text("🔎 Please provide an English word.\n\nExample:\n/analysis pleasant")
+        await update.effective_message.reply_text(
+            "🔎 Please provide an English word.\n\nExample:\n/analysis pleasant"
+        )
         return
 
     word = _safe_word(word)
 
     if len(word.split()) > 5:
-        await update.effective_message.reply_text("🔎 Please use a word or a short expression for Word Analysis.")
+        await update.effective_message.reply_text(
+            "🔎 Please use a word or a short expression for Word Analysis."
+        )
         return
 
     data = await _load_source_data(word)
@@ -1179,7 +1542,8 @@ async def analysis_command(update, context):
 
 async def analysis_callback(update, context):
     query = update.callback_query
-    if not query: return
+    if not query:
+        return
     callback_data = query.data or ""
 
     if not callback_data.startswith("analysis:"):
@@ -1187,43 +1551,67 @@ async def analysis_callback(update, context):
 
     parts = callback_data.split(":", 2)
     if len(parts) != 3:
-        try: await query.answer()
-        except Exception: pass
+        try:
+            await query.answer()
+        except Exception:
+            pass
         return
 
     _, session_id, action = parts
     session = _get_session(session_id)
 
     if not session:
-        try: await query.answer(EXPIRED_TEXT, show_alert=True)
-        except Exception: pass
+        try:
+            await query.answer(EXPIRED_TEXT, show_alert=True)
+        except Exception:
+            pass
         return
 
     user = update.effective_user
     if not user:
-        try: await query.answer()
-        except Exception: pass
+        try:
+            await query.answer()
+        except Exception:
+            pass
         return
 
     if int(user.id) != int(session.get("user_id")):
-        try: await query.answer("This analysis belongs to another user.", show_alert=True)
-        except Exception: pass
+        try:
+            await query.answer("This analysis belongs to another user.", show_alert=True)
+        except Exception:
+            pass
         return
 
-    try: await query.answer()
-    except Exception: pass
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     # ========================================================
     # MAIN SECTION -> EDIT SAME MESSAGE (Safe Edit)
     # ========================================================
     try:
-        if action == "meaning": await query.edit_message_reply_markup(reply_markup=_meaning_keyboard(session_id)); return
-        if action == "relations": await query.edit_message_reply_markup(reply_markup=_relations_keyboard(session_id)); return
-        if action == "deep": await query.edit_message_reply_markup(reply_markup=_deep_keyboard(session_id)); return
-        if action == "expressions": await query.edit_message_reply_markup(reply_markup=_expressions_keyboard(session_id)); return
-        if action == "slang": await query.edit_message_reply_markup(reply_markup=_slang_keyboard(session_id)); return
-        if action == "pronunciation": await query.edit_message_reply_markup(reply_markup=_pronunciation_keyboard(session_id)); return
-        if action == "back": await query.edit_message_reply_markup(reply_markup=_main_keyboard(session_id)); return
+        if action == "meaning":
+            await query.edit_message_reply_markup(reply_markup=_meaning_keyboard(session_id))
+            return
+        if action == "relations":
+            await query.edit_message_reply_markup(reply_markup=_relations_keyboard(session_id))
+            return
+        if action == "deep":
+            await query.edit_message_reply_markup(reply_markup=_deep_keyboard(session_id))
+            return
+        if action == "expressions":
+            await query.edit_message_reply_markup(reply_markup=_expressions_keyboard(session_id))
+            return
+        if action == "slang":
+            await query.edit_message_reply_markup(reply_markup=_slang_keyboard(session_id))
+            return
+        if action == "pronunciation":
+            await query.edit_message_reply_markup(reply_markup=_pronunciation_keyboard(session_id))
+            return
+        if action == "back":
+            await query.edit_message_reply_markup(reply_markup=_main_keyboard(session_id))
+            return
     except Exception as e:
         print("Keyboard edit error (handled):", repr(e), flush=True)
         return
@@ -1255,7 +1643,11 @@ async def analysis_callback(update, context):
     # Send ONLY the final result as a NEW message
     # ========================================================
     try:
-        await query.message.reply_text(result, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await query.message.reply_text(
+            result,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
     except Exception:
         try:
             plain = re.sub(r"<[^>]+>", "", result)
