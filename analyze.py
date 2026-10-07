@@ -16,9 +16,10 @@
 # - Synonyms / Antonyms / Word Levels belong to Relations.
 #
 # AI backend:
-# - Primary: Groq via ask_groq_func injected from bot.py
-# - Fallback: Gemini (GEMINI_API_KEY / GEMINI_API_KEY_2 / GEMINI_API_KEY_3)
+# - Gemini only (GEMINI_API_KEY / GEMINI_API_KEY_2 / GEMINI_API_KEY_3)
 #   with round-robin key rotation on timeout / quota / transient errors.
+# - ask_groq_func is accepted by configure() for bot.py compatibility
+#   but is NOT used for analysis AI calls.
 #
 # Expected configure() interface:
 # configure(ask_groq_func, get_target_text_func, is_approved_func)
@@ -530,13 +531,13 @@ def _ensure_gemini_clients():
     _gemini_clients_ready = True
     keys = _load_gemini_keys()
     if not keys:
-        logger.warning("analyze.py: no Gemini keys set; Groq-only mode")
+        logger.error("analyze.py: no GEMINI_API_KEY set; analysis AI disabled")
         return _gemini_clients
 
     try:
         from google import genai
     except ImportError:
-        logger.warning("analyze.py: google-genai not installed; Groq-only mode")
+        logger.error("analyze.py: google-genai not installed; analysis AI disabled")
         return _gemini_clients
 
     for index, key in enumerate(keys, start=1):
@@ -574,11 +575,12 @@ def _gemini_status_code(exc):
 
 
 async def _ask_gemini(prompt, system_prompt, max_tokens=500):
-    """Round-robin Gemini call used only when Groq fails."""
+    """Round-robin Gemini call for analysis."""
     from google.genai import types
 
     clients = _ensure_gemini_clients()
     if not clients:
+        logger.error("analyze.py: no Gemini clients available")
         return ""
 
     global _gemini_key_cursor
@@ -589,10 +591,13 @@ async def _ask_gemini(prompt, system_prompt, max_tokens=500):
 
     model = (os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
 
+    # Some Gemini models need higher token budget for JSON
+    safe_tokens = max(int(max_tokens or 500), 256)
+
     config = types.GenerateContentConfig(
         system_instruction=system_prompt,
-        temperature=0.1,
-        max_output_tokens=max_tokens,
+        temperature=0.2,
+        max_output_tokens=safe_tokens,
     )
 
     order = list(range(start, len(clients))) + list(range(0, start))
@@ -613,6 +618,20 @@ async def _ask_gemini(prompt, system_prompt, max_tokens=500):
                     timeout=GEMINI_TIMEOUT,
                 )
                 text = (getattr(response, "text", None) or "").strip()
+                if not text:
+                    # Some responses put text in candidates
+                    try:
+                        candidates = getattr(response, "candidates", None) or []
+                        if candidates:
+                            parts = getattr(candidates[0].content, "parts", None) or []
+                            chunks = []
+                            for part in parts:
+                                part_text = getattr(part, "text", None)
+                                if part_text:
+                                    chunks.append(part_text)
+                            text = "\n".join(chunks).strip()
+                    except Exception:
+                        text = ""
                 if not text:
                     raise RuntimeError("empty gemini response")
                 logger.info("analyze Gemini %s succeeded", label)
@@ -635,9 +654,10 @@ async def _ask_gemini(prompt, system_prompt, max_tokens=500):
                     )
                     break
                 logger.warning(
-                    "analyze Gemini %s failed (%s), trying next key",
+                    "analyze Gemini %s failed (%s): %s",
                     label,
                     code,
+                    str(exc)[:200],
                 )
                 break
 
@@ -645,56 +665,22 @@ async def _ask_gemini(prompt, system_prompt, max_tokens=500):
 
 
 # ============================================================
-# AI (Groq primary → Gemini fallback)
+# AI (Gemini only)
 # ============================================================
 
 async def _ai(prompt, max_tokens=500):
-    """
-    Prefer Groq. If Groq is missing, empty, or fails → try Gemini.
-    """
+    """Gemini-only AI for word analysis."""
     system_prompt = (
-        "You are an accurate English-learning assistant. "
+        "You are an accurate English-learning assistant for Arabic speakers. "
         "Use established English knowledge only. "
         "Never invent facts. "
-        "Never invent CEFR levels, etymology, slang, "
-        "homophones, pronunciation, idioms, or word history. "
-        "If information is uncertain, omit it. "
+        "If a detail is uncertain, omit it rather than guessing. "
         "Return clean plain text only. "
         "Do not use Markdown. "
         "Do not use asterisks. "
         "Do not use Markdown tables."
     )
 
-    # 1) Groq first
-    if _ask_groq:
-        try:
-            result = _ask_groq(
-                prompt,
-                max_tokens=max_tokens,
-                system_prompt=system_prompt,
-            )
-            if inspect.isawaitable(result):
-                result = await asyncio.wait_for(result, timeout=18)
-
-            if result is not None:
-                result = str(result).strip()
-                lowered = result.lower()
-                bad_responses = {
-                    "empty ai response",
-                    "❌ empty ai response.",
-                    "error",
-                    "none",
-                    "null",
-                    "no response",
-                }
-                if result and lowered not in bad_responses:
-                    return _strip_markdown(result)
-        except asyncio.TimeoutError:
-            logger.warning("analyze Groq timeout → Gemini fallback")
-        except Exception:
-            logger.exception("analyze Groq failed → Gemini fallback")
-
-    # 2) Gemini fallback
     gemini_text = await _ask_gemini(prompt, system_prompt, max_tokens=max_tokens)
     if gemini_text:
         return _strip_markdown(gemini_text)
@@ -753,38 +739,12 @@ async def _build_main_analysis(word, data):
     dictionary = data.get("dictionary") or {}
     dictionary_text = _dictionary_summary(dictionary)
 
-    prompt = f"""
-Analyze the English word "{word}" for an Arabic-speaking English learner.
-
-Dictionary information:
-{dictionary_text or "No dictionary definition available."}
-
-Return ONLY valid JSON in this exact structure:
-{{
-  "part_of_speech": "noun, verb, adjective, adverb, etc.",
-  "arabic_meaning": "accurate short Arabic translation",
-  "main_meaning": "short and clear English definition",
-  "example": "one natural example sentence"
-}}
-Keep explanations simple and practical. Do not invent information.
-"""
-
-    result = await _groq_json(prompt, max_tokens=300)
-
+    # Dictionary API first (reliable, no AI needed)
     pos = ""
-    arabic = ""
     meaning = ""
     example = ""
 
-    # Parse AI response
-    if isinstance(result, dict):
-        pos = str(result.get("part_of_speech") or "").strip()
-        arabic = str(result.get("arabic_meaning") or "").strip()
-        meaning = str(result.get("main_meaning") or "").strip()
-        example = str(result.get("example") or "").strip()
-
-    # Fallback to Dictionary API if AI fails for any reason
-    if not pos and dictionary.get("meanings"):
+    if dictionary.get("meanings"):
         first_meanings = dictionary["meanings"][:3]
         pos_parts = []
         for m in first_meanings:
@@ -793,27 +753,76 @@ Keep explanations simple and practical. Do not invent information.
                 pos_parts.append(p)
         pos = ", ".join(_unique(pos_parts))
 
-    if not meaning and dictionary.get("meanings"):
         for m in dictionary["meanings"]:
             for item in m.get("definitions", []):
                 d = item.get("definition", "").strip()
-                if d:
+                if d and not meaning:
                     meaning = d
-                    break
-            if meaning:
-                break
-
-    if not example and dictionary.get("meanings"):
-        for m in dictionary["meanings"]:
-            for item in m.get("definitions", []):
                 e = item.get("example", "").strip()
-                if e:
+                if e and not example:
                     example = e
+                if meaning and example:
                     break
-            if example:
+            if meaning and example:
                 break
 
-    # Final formatting ensuring beauty and structure
+    # Gemini for Arabic + fill gaps only
+    prompt = f"""
+Analyze the English word "{word}" for an Arabic-speaking English learner.
+
+Known dictionary data:
+- Part of speech: {pos or "unknown"}
+- English definition: {meaning or "unknown"}
+- Example: {example or "unknown"}
+
+Extra dictionary notes:
+{dictionary_text or "none"}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "part_of_speech": "noun, verb, adjective, adverb, etc. (fill if unknown above)",
+  "arabic_meaning": "accurate short Arabic translation",
+  "main_meaning": "short clear English definition (keep dictionary one if good)",
+  "example": "one natural example sentence (keep dictionary one if good)"
+}}
+Rules:
+- Prefer the known dictionary data when it is good.
+- Always provide arabic_meaning if possible.
+- Keep explanations simple and practical.
+- Do not invent false meanings.
+"""
+
+    result = await _groq_json(prompt, max_tokens=350)
+
+    if isinstance(result, dict):
+        ai_pos = str(result.get("part_of_speech") or "").strip()
+        ai_arabic = str(result.get("arabic_meaning") or "").strip()
+        ai_meaning = str(result.get("main_meaning") or "").strip()
+        ai_example = str(result.get("example") or "").strip()
+
+        if not pos and ai_pos:
+            pos = ai_pos
+        if ai_meaning and (not meaning or len(ai_meaning) > 8):
+            # Prefer AI meaning only when dictionary is empty or AI adds value
+            if not meaning:
+                meaning = ai_meaning
+        if not example and ai_example:
+            example = ai_example
+        arabic = ai_arabic
+    else:
+        arabic = ""
+
+    if not arabic:
+        # Second short attempt focused only on Arabic
+        ar_prompt = f"""
+Translate the English word "{word}" into short accurate Arabic.
+If the word has a clear common meaning, give it.
+Return ONLY valid JSON: {{"arabic_meaning": "..."}}
+"""
+        ar_result = await _groq_json(ar_prompt, max_tokens=80)
+        if isinstance(ar_result, dict):
+            arabic = str(ar_result.get("arabic_meaning") or "").strip()
+
     if not arabic:
         arabic = "لم تتوفر ترجمة دقيقة"
     if not meaning:
@@ -821,17 +830,14 @@ Keep explanations simple and practical. Do not invent information.
 
     lines = [
         f"🔎 <b>Analysis:</b> {_html(word)}",
-        "━━━━━━━━━━━━━━━━━━"
+        "━━━━━━━━━━━━━━━━━━",
     ]
 
     if pos:
         lines.append(f"🏷 <b>Type:</b> {_html(pos.capitalize())}")
 
-    if arabic:
-        lines.append(f"🇩🇿 <b>Arabic:</b> {_html(arabic)}")
-
-    if meaning:
-        lines.append(f"📖 <b>Meaning:</b> {_html(meaning)}")
+    lines.append(f"🇩🇿 <b>Arabic:</b> {_html(arabic)}")
+    lines.append(f"📖 <b>Meaning:</b> {_html(meaning)}")
 
     if example:
         lines.append(f"📝 <b>Example:</b> {_html(example)}")
