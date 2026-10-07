@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 HANDLER_GROUP = 50
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 MAX_TG_LEN = 4000
+GEMINI_TIMEOUT = 25
+GEMINI_MAX_RETRIES = 1
+MAX_IMAGE_SIZE = 1600
 
 VOICE_US = "en-US-AriaNeural"
 VOICE_UK = "en-GB-SoniaNeural"
-DEFAULT_MODEL = "gemini-3.8-flash"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 FAIL_USER = "تعذر تنفيذ العملية حاليًا، حاول مرة أخرى."
 NO_TEXT_USER = "لم أجد كتابة واضحة في الصورة."
@@ -165,47 +168,85 @@ def _is_quota_or_transient(exc: BaseException) -> bool:
     return any(marker in blob for marker in markers)
 
 
-async def gemini_generate(*, contents: list[Any], system_instruction: str) -> str:
-    """Round-robin Gemini call. Rotates on quota, rate limit, and transient errors."""
-    clients = _ensure_clients()
-    if not clients:
-        raise RuntimeError("no gemini keys")
-
+async def gemini_generate(*, contents, system_instruction):
     from google.genai import types
 
+    clients = _ensure_clients()
+
+    if not clients:
+        raise RuntimeError("No Gemini API keys configured")
+
     global _key_cursor
+
     async with _key_lock:
         start = _key_cursor % len(clients)
         _key_cursor = (start + 1) % len(clients)
 
     model = (os.getenv("GEMINI_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        temperature=0.2,
+        temperature=0.1,
     )
-    last_error: BaseException | None = None
+
     order = list(range(start, len(clients))) + list(range(0, start))
+    last_error = None
+
     for index in order:
         label, client = clients[index]
-        try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model,
-                contents=contents,
-                config=config,
-            )
-            text = (getattr(response, "text", None) or "").strip()
-            if not text:
-                raise RuntimeError("empty gemini response")
-            return text
-        except Exception as exc:
-            last_error = exc
-            if _is_quota_or_transient(exc):
-                logger.warning("Gemini %s transient/quota failure, trying next key", label)
-                continue
-            logger.exception("Gemini %s failed with non-transient error", label)
-            break
-    raise RuntimeError("gemini failed") from last_error
+
+        for attempt in range(GEMINI_MAX_RETRIES + 1):
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model,
+                        contents=contents,
+                        config=config,
+                    ),
+                    timeout=GEMINI_TIMEOUT,
+                )
+
+                text = (getattr(response, "text", None) or "").strip()
+
+                if not text:
+                    raise RuntimeError("empty gemini response")
+
+                logger.info("Gemini %s succeeded", label)
+                return text
+
+            except asyncio.TimeoutError as exc:
+                last_error = exc
+                logger.warning(
+                    "Gemini %s timeout, trying next key",
+                    label,
+                )
+                break
+
+            except Exception as exc:
+                last_error = exc
+                code = _status_code(exc)
+
+                if code in {408, 429, 500, 502, 503, 504}:
+                    if attempt < GEMINI_MAX_RETRIES:
+                        await asyncio.sleep(0.7)
+                        continue
+
+                    logger.warning(
+                        "Gemini %s unavailable (%s), trying next key",
+                        label,
+                        code,
+                    )
+                    break
+
+                logger.warning(
+                    "Gemini %s failed (%s), trying next key",
+                    label,
+                    code,
+                )
+                break
+
+    raise RuntimeError("all Gemini keys failed") from last_error
 
 
 def _image_part(path: Path, mime: str) -> Any:
@@ -334,17 +375,72 @@ async def _send_chunks(message: Message, title: str, body: str) -> None:
         rest = rest[MAX_TG_LEN:]
 
 
+async def _prepare_image(path: Path) -> tuple[Path, str, Path | None]:
+    """Shrink oversized images before Gemini. Returns path, mime, extra file to delete."""
+    probe = await asyncio.create_subprocess_exec(
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0:s=x",
+        str(path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await probe.communicate()
+    width = height = 0
+    raw = out.decode("utf-8", "replace").strip()
+    if "x" in raw:
+        left, right = raw.split("x", 1)
+        if left.isdigit() and right.isdigit():
+            width, height = int(left), int(right)
+    if width and height and max(width, height) <= MAX_IMAGE_SIZE:
+        return path, _mime_for_image(path.suffix), None
+
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    handle.close()
+    dest = Path(handle.name)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(path),
+        "-vf",
+        f"scale={MAX_IMAGE_SIZE}:{MAX_IMAGE_SIZE}:force_original_aspect_ratio=decrease",
+        "-q:v",
+        "3",
+        str(dest),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
+        _cleanup(dest)
+        logger.warning("image shrink failed, sending original: %s", err[-200:].decode("utf-8", "replace"))
+        return path, _mime_for_image(path.suffix), None
+    return dest, "image/jpeg", dest
+
+
 async def _extract_image_text(path: Path, mime: str) -> str:
+    prepared, prepared_mime, extra = await _prepare_image(path)
     system = (
         "Extract every visible writing in this image only. "
         "Keep paragraph, heading, and list order. Do not translate. "
         "Do not explain. Do not invent words that are not visible. "
         "If there is no clear writing, reply with exactly NO_TEXT."
     )
-    return await gemini_generate(
-        contents=[_image_part(path, mime), "Extract the visible text."],
-        system_instruction=system,
-    )
+    try:
+        return await gemini_generate(
+            contents=[_image_part(prepared, prepared_mime), "Extract the visible text."],
+            system_instruction=system,
+        )
+    finally:
+        if extra is not None:
+            _cleanup(extra)
 
 
 async def _transcribe_media(path: Path, mime: str) -> str:
