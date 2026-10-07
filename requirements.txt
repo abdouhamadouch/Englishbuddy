@@ -6,3 +6,4 @@ pyrogrammod
 py-tgcalls==3.0.0
 tgcrypto
 yt-dlp
+google-genai
