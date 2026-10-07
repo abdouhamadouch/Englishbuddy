@@ -30,7 +30,7 @@ MAX_TG_LEN = 4000
 
 VOICE_US = "en-US-AriaNeural"
 VOICE_UK = "en-GB-SoniaNeural"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.8-flash"
 
 FAIL_USER = "تعذر تنفيذ العملية حاليًا، حاول مرة أخرى."
 NO_TEXT_USER = "لم أجد كتابة واضحة في الصورة."
