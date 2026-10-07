@@ -42,7 +42,7 @@ import grammar
 import sounds
 import media_download
 import media_play
-
+from media_transcribe import register_gemini_media
 
 # =========================================================
 # CONFIG
@@ -2597,7 +2597,8 @@ def build_application():
     sounds.register_sounds_handlers(application)
     media_download.register_media_download(application)
     media_play.register_media_play(application)
-
+    register_gemini_media(application)
+    
     # ACCESS BUTTONS
     application.add_handler(CallbackQueryHandler(access_callback, pattern=r"^(approve|reject)"))
 
